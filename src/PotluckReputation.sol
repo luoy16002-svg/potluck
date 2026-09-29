@@ -28,6 +28,7 @@ contract PotluckReputation {
     error AlreadyRecorded();
 
     constructor(address factory_) {
+        if (factory_ == address(0)) revert OnlyFactory();
         factory = factory_;
     }
 

@@ -6,6 +6,7 @@ import {PotluckFactory} from "../src/PotluckFactory.sol";
 import {PotluckCircle} from "../src/PotluckCircle.sol";
 import {PotluckReputation} from "../src/PotluckReputation.sol";
 import {TestUSDG} from "../src/mocks/TestUSDG.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract PotluckTest is Test {
     PotluckFactory factory;
@@ -210,6 +211,12 @@ contract PotluckTest is Test {
         uint256 before3 = usdg.balanceOf(people[3]);
         vm.warp(circle.roundDeadline(1) + 1);
         circle.settleRound();
+        // settling only credits; nobody is paid until they claim
+        assertEq(usdg.balanceOf(people[3]), before3);
+        vm.prank(people[1]);
+        circle.claim();
+        vm.prank(people[3]);
+        circle.claim();
 
         assertEq(circle.result(1).winner, people[3]);
         assertEq(circle.result(1).discount, 35e6);
@@ -292,6 +299,47 @@ contract PotluckTest is Test {
         impl.initialize(address(this), "x", _cfg(3, PotluckCircle.Mode.Fixed, 0, 0), address(rep));
     }
 
+    // ----------------------------------------------------------------------------------------- frozen
+
+    /// A member whose address the token issuer freezes cannot stop the circle: rounds still settle,
+    /// everyone else claims and withdraws, and the frozen member's money stays credited to them.
+    function test_frozenMemberCannotBlockTheCircle() public {
+        FreezableUSDG f = new FreezableUSDG();
+        for (uint256 i; i < 3; ++i) f.mint(people[i], 10_000e6);
+        PotluckCircle.Config memory c = _cfg(3, PotluckCircle.Mode.Auction, 2000, 1000);
+        c.token = f;
+        vm.prank(people[0]);
+        PotluckCircle circle = PotluckCircle(factory.createCircle("frozen", c));
+        for (uint256 i; i < 3; ++i) {
+            vm.startPrank(people[i]);
+            f.approve(address(circle), type(uint256).max);
+            circle.join();
+            vm.stopPrank();
+        }
+        f.freeze(people[1]); // after joining, the issuer freezes member 1
+        for (uint256 r = 1; r <= 3; ++r) {
+            for (uint256 i; i < 3; ++i) {
+                if (i == 1) continue; // frozen: cannot pay, collateral covers round 1, then defaults
+                vm.prank(people[i]);
+                circle.contribute();
+            }
+            vm.warp(circle.roundDeadline(r) + 1);
+            circle.settleRound(); // never reverts on the frozen address
+        }
+        assertEq(uint8(circle.phase()), uint8(PotluckCircle.Phase.Completed));
+        for (uint256 i; i < 3; ++i) {
+            if (i == 1) continue;
+            vm.prank(people[i]);
+            circle.withdraw();
+        }
+        vm.prank(people[1]);
+        vm.expectRevert();
+        circle.withdraw(); // the token refuses, only for the frozen member
+        PotluckCircle.Member memory m1 = circle.memberInfo(people[1]);
+        assertEq(usdg.balanceOf(address(circle)), 0);
+        assertEq(f.balanceOf(address(circle)), m1.collateralLeft + m1.bond + m1.claimable, "only the frozen member's own funds remain");
+    }
+
     // ------------------------------------------------------------------------------------ conservation
 
     /// Random sizes, bonds, bids and missed payments: the circle never holds more or less than it owes.
@@ -324,7 +372,7 @@ contract PotluckTest is Test {
         }
         for (uint256 i; i < size; ++i) {
             PotluckCircle.Member memory m = circle.memberInfo(people[i]);
-            if (m.collateralLeft + m.bond > 0) {
+            if (m.collateralLeft + m.bond + m.claimable > 0) {
                 vm.prank(people[i]);
                 circle.withdraw();
             }
@@ -333,5 +381,29 @@ contract PotluckTest is Test {
         for (uint256 i; i < size; ++i) after_ += usdg.balanceOf(people[i]);
         assertEq(usdg.balanceOf(address(circle)), 0, "nothing stranded");
         assertEq(after_, total, "conserved");
+    }
+}
+
+/// USDG-like token whose issuer can freeze addresses (Paxos USDG supports freezing).
+contract FreezableUSDG is ERC20 {
+    mapping(address => bool) public frozen;
+
+    constructor() ERC20("Freezable USDG", "USDG") {}
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function freeze(address who) external {
+        frozen[who] = true;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        require(!frozen[from] && !frozen[to], "frozen");
+        super._update(from, to, value);
     }
 }

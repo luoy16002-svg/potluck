@@ -26,6 +26,10 @@ interface IPotluckReputation {
 ///   end. A winner who stops paying is covered from this bond first.
 /// - A member whose collateral and bond cannot cover a missed round is marked defaulted and can no longer win.
 ///
+/// Payouts are pulled, not pushed: settling a round only credits winners and dividend receivers, and each member
+/// takes their money with `claim` (any time) or `withdraw` (at the end). A member whose address is frozen by the
+/// token issuer, or who cannot receive tokens for any other reason, can never block the circle for everyone else.
+///
 /// There is no owner and no admin function: funds only move by the rules below. On completion every
 /// member's record (on-time payments, missed payments, default) is written to PotluckReputation.
 contract PotluckCircle is Initializable, ReentrancyGuard {
@@ -67,6 +71,7 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
         uint128 bond;
         uint128 contributed;
         uint128 received;
+        uint128 claimable;
     }
 
     struct RoundResult {
@@ -113,6 +118,7 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
     event Completed();
     event Cancelled();
     event Withdrawn(address indexed member, uint128 amount);
+    event Claimed(address indexed member, uint128 amount);
 
     error WrongPhase();
     error BadConfig();
@@ -142,6 +148,7 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
                 || c.roundDuration < 60 || c.joinWindow < 60 || c.bondBps > MAX_BOND_BPS
                 || c.maxDiscountBps > MAX_DISCOUNT_BPS || (c.mode == Mode.Fixed && c.maxDiscountBps != 0)
         ) revert BadConfig();
+        if (creator_ == address(0)) revert BadConfig();
         creator = creator_;
         name = name_;
         _config = c;
@@ -263,9 +270,9 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
             uint128 dust = discount > 0 ? _splitAmongGood(r, discount, winner) : 0;
             uint128 payout = gross - bondAmt + dust;
             w.received += payout;
+            w.claimable += payout;
             _results[r] = RoundResult(winner, pot, discount, payout, bondAmt, uint64(block.timestamp));
             emit RoundSettled(r, winner, pot, discount, payout, bondAmt);
-            _config.token.safeTransfer(winner, payout);
         }
 
         if (r == _config.size) {
@@ -277,17 +284,28 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
         }
     }
 
-    /// @notice Take back remaining collateral and bond after the circle completes or is cancelled.
+    /// @notice Take the pots and dividends credited to you so far. Works in any phase.
+    function claim() external nonReentrant {
+        Member storage m = _member[msg.sender];
+        uint128 amount = m.claimable;
+        if (amount == 0) revert NothingToWithdraw();
+        m.claimable = 0;
+        emit Claimed(msg.sender, amount);
+        _config.token.safeTransfer(msg.sender, amount);
+    }
+
+    /// @notice After the circle completes or is cancelled: take back remaining collateral and bond, together
+    /// with anything still unclaimed.
     function withdraw() external nonReentrant {
         if (phase != Phase.Completed && phase != Phase.Cancelled) revert WrongPhase();
         Member storage m = _member[msg.sender];
         if (!m.joined) revert NotMember();
-        if (m.withdrawn) revert NothingToWithdraw();
-        uint128 amount = m.collateralLeft + m.bond;
+        uint128 amount = m.collateralLeft + m.bond + m.claimable;
         if (amount == 0) revert NothingToWithdraw();
         m.withdrawn = true;
         m.collateralLeft = 0;
         m.bond = 0;
+        m.claimable = 0;
         emit Withdrawn(msg.sender, amount);
         _config.token.safeTransfer(msg.sender, amount);
     }
@@ -332,12 +350,12 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
         return address(0);
     }
 
-    /// @dev Splits `amount` equally among members in good standing except `exclude`, paying them directly.
+    /// @dev Splits `amount` equally among members in good standing except `exclude`, crediting their claimable balance.
     /// If nobody is in good standing, it is split among all members except `exclude` so no funds are stranded.
     /// With an `exclude` (the round winner) the undivided remainder is returned for the caller to add to the
     /// winner's payout; without one it goes to the first recipient.
     function _splitAmongGood(uint256 r, uint128 amount, address exclude) internal returns (uint128 dust) {
-        uint256 n;
+        uint256 n = 0;
         for (uint256 i; i < _members.length; ++i) {
             address a = _members[i];
             if (a != exclude && !_member[a].defaulted) ++n;
@@ -361,8 +379,8 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
             }
             if (pay == 0) continue;
             _member[a].received += pay;
+            _member[a].claimable += pay;
             emit DividendPaid(a, r, pay);
-            _config.token.safeTransfer(a, pay);
         }
     }
 

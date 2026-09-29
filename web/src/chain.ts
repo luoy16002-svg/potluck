@@ -53,7 +53,7 @@ export function chainById(id: number): Chain {
 const publicClients = new Map<number, PublicClient>();
 export function publicClient(chain: Chain): PublicClient {
   if (!publicClients.has(chain.id)) {
-    publicClients.set(chain.id, createPublicClient({ chain, transport: http() }) as PublicClient);
+    publicClients.set(chain.id, createPublicClient({ chain, transport: http(undefined, { retryCount: 6, retryDelay: 800 }) }) as PublicClient);
   }
   return publicClients.get(chain.id)!;
 }

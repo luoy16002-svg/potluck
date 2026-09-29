@@ -3,6 +3,7 @@ import { isAddress, maxUint256, type Address, type Chain, type WalletClient } fr
 import { PotluckCircleAbi } from './abi/PotluckCircle';
 import { PotluckFactoryAbi } from './abi/PotluckFactory';
 import { TestUSDGAbi } from './abi/TestUSDG';
+import { Practice } from './Practice';
 import { chainById, chains, connectWallet, demoAccountIndex, deployments, explorerAddress, explorerTx, publicClient } from './chain';
 import {
   MODES,
@@ -19,13 +20,14 @@ import {
   type Stats,
 } from './data';
 
-type Route = { page: 'home' } | { page: 'circle'; address: Address } | { page: 'score'; address?: Address };
+type Route = { page: 'home' } | { page: 'practice' } | { page: 'circle'; address: Address } | { page: 'score'; address?: Address };
 
 function parseRoute(): Route {
   const h = location.hash.replace(/^#\/?/, '');
   const [p, a] = h.split('/');
   if (p === 'c' && a && isAddress(a)) return { page: 'circle', address: a };
   if (p === 'score') return { page: 'score', address: a && isAddress(a) ? a : undefined };
+  if (p === 'practice') return { page: 'practice' };
   return { page: 'home' };
 }
 
@@ -103,8 +105,7 @@ export default function App() {
         setTick((t) => t + 1);
         return true;
       } catch (e) {
-        const msg = (e as { shortMessage?: string }).shortMessage ?? (e as Error).message;
-        setToast({ text: `${label} failed: ${msg}`, kind: 'err' });
+        setToast({ text: `${label} failed: ${explain(e)}`, kind: 'err' });
         return false;
       }
     },
@@ -121,6 +122,7 @@ export default function App() {
         </a>
         <nav>
           <a href="#/" className={route.page === 'home' ? 'on' : ''}>Circles</a>
+          <a href="#/practice" className={route.page === 'practice' ? 'on' : ''}>Try it alone</a>
           <a href={`#/score${account ? '/' + account : ''}`} className={route.page === 'score' ? 'on' : ''}>Savings score</a>
         </nav>
         <div className="right">
@@ -136,6 +138,7 @@ export default function App() {
       {route.page === 'home' && <Home chain={chain} tick={tick} send={send} account={account} />}
       {route.page === 'circle' && <CirclePage key={route.address} chain={chain} address={route.address} account={account} send={send} tick={tick} />}
       {route.page === 'score' && <ScorePage chain={chain} address={route.address ?? account ?? undefined} />}
+      {route.page === 'practice' && <Practice chain={chain} account={account} wallet={wallet} send={send} connect={connect} />}
 
       {toast && (
         <div className={`toast ${toast.kind === 'err' ? 'err' : ''}`} onClick={() => setToast(null)}>
@@ -154,6 +157,35 @@ export default function App() {
       </footer>
     </div>
   );
+}
+
+const FRIENDLY: Record<string, string> = {
+  WrongPhase: 'the circle is not in the right stage for this',
+  JoinClosed: 'the join window has closed',
+  AlreadyMember: 'you are already a member',
+  NotMember: 'this wallet is not a member of the circle',
+  AlreadyPaid: 'you already paid this round',
+  NotEligible: 'you cannot bid: you already took a pot or defaulted',
+  MustContributeFirst: 'pay this round before bidding',
+  BiddingClosed: 'bidding for this round has closed',
+  DiscountTooHigh: 'that discount is above the maximum for this circle',
+  BidTooLow: 'someone already offered that much or more',
+  RoundStillOpen: 'the round is still open',
+  NotCancellable: 'only the creator can cancel before the join window ends',
+  NothingToWithdraw: 'nothing left to withdraw',
+  Cooldown: 'the test USDG faucet gives 1,000 per hour; try again later',
+  ERC20InsufficientBalance: 'not enough USDG in your wallet',
+  ERC20InsufficientAllowance: 'approve USDG first',
+};
+
+/** Turn wallet and contract errors into one plain sentence. */
+function explain(e: unknown): string {
+  const raw = `${(e as { shortMessage?: string }).shortMessage ?? ''} ${(e as Error).message ?? ''}`;
+  const name = raw.match(/Error: (\w+)\(/)?.[1] ?? raw.match(/reverted with the following reason:\s*(\w+)/)?.[1];
+  if (name && FRIENDLY[name]) return FRIENDLY[name];
+  if (/User rejected|denied/i.test(raw)) return 'you rejected the request in your wallet';
+  if (/insufficient funds/i.test(raw)) return 'not enough test ETH for gas; use the faucet link on the Try it page';
+  return ((e as { shortMessage?: string }).shortMessage ?? (e as Error).message ?? 'unknown error').split('\n')[0];
 }
 
 type Send = (label: string, req: { address: Address; abi: readonly unknown[]; functionName: string; args?: unknown[] }) => Promise<boolean>;
@@ -209,6 +241,7 @@ function Home({ chain, tick, send, account }: { chain: Chain; tick: number; send
             Potluck puts the circle in a contract: collateral and a winner's bond cover missed payments, an optional auction lets whoever
             needs the money first pay the others interest, and every on-time payment becomes a portable savings record.
           </p>
+          <a className="btn big" href="#/practice">Try a whole circle alone, in 3 minutes →</a>
         </div>
         <HeroRing />
       </section>
@@ -461,6 +494,9 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
               <div><span>Received</span><b>{usd(mine.received)}</b></div>
             </div>
           )}
+          {mine && mine.claimable > 0n && (
+            <button className="btn" onClick={() => call('Claim payout', 'claim')}>Claim {usd(mine.claimable)} USDG</button>
+          )}
           {c.phase === 1 && mine && !mine.defaulted && !mine.paidThisRound && (
             needsApproval(cfg.contribution) ? (
               <button className="btn" onClick={approve}>Approve USDG</button>
@@ -486,9 +522,9 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
               Settle round {c.currentRound} → pay {auction && c.topBidder ? short(c.topBidder) : nextInLine ? short(nextInLine.address) : 'members'}
             </button>
           )}
-          {(c.phase === 2 || c.phase === 3) && mine && !mine.withdrawn && mine.collateralLeft + mine.bond > 0n && (
+          {(c.phase === 2 || c.phase === 3) && mine && mine.collateralLeft + mine.bond > 0n && (
             <button className="btn" onClick={() => call('Withdraw collateral and bond', 'withdraw')}>
-              Withdraw {usd(mine.collateralLeft + mine.bond)} USDG
+              Withdraw {usd(mine.collateralLeft + mine.bond + mine.claimable)} USDG
             </button>
           )}
           {c.phase === 0 && account?.toLowerCase() === c.creator.toLowerCase() && (
