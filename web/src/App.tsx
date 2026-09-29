@@ -4,7 +4,7 @@ import { PotluckCircleAbi } from './abi/PotluckCircle';
 import { PotluckFactoryAbi } from './abi/PotluckFactory';
 import { TestUSDGAbi } from './abi/TestUSDG';
 import { Practice } from './Practice';
-import { chainById, chains, connectWallet, demoAccountIndex, deployments, explorerAddress, explorerTx, publicClient } from './chain';
+import { chainById, chains, connectWallet, demoAccountIndex, deployments, explorerAddress, explorerTx, gasFor, publicClient } from './chain';
 import {
   MODES,
   PHASES,
@@ -97,7 +97,9 @@ export default function App() {
       }
       try {
         setToast({ text: `${label}…` });
-        const hash = await wallet.writeContract({ ...req, account: wallet.account ?? account, chain } as never);
+        const from = wallet.account ?? account;
+        const gas = await gasFor(chain, req, from);
+        const hash = await wallet.writeContract({ ...req, account: from, chain, gas } as never);
         setToast({ text: `${label}: waiting for the block…`, link: explorerTx(chain, hash) });
         const rc = await publicClient(chain).waitForTransactionReceipt({ hash });
         if (rc.status !== 'success') throw new Error('Transaction reverted');

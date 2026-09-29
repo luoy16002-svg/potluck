@@ -61,7 +61,9 @@ export type Circle = {
   joinDeadline: number;
   maxDiscount: bigint;
   results: RoundResult[];
-  /** chain time minus wall-clock time, in seconds (local chains can be fast-forwarded) */
+  /** How far chain time runs ahead of the wall clock, in seconds (local chains can be fast-forwarded). Never
+   * negative: Arbitrum only makes a block when a transaction arrives, so on a quiet chain the latest block is
+   * simply old, while calls and new transactions already run at the current time. */
   clockSkew: number;
 };
 
@@ -133,7 +135,7 @@ export async function readCircle(chain: Chain, address: Address): Promise<Circle
     joinDeadline: Number(joinDeadline),
     maxDiscount,
     results,
-    clockSkew: Number(block.timestamp) - Math.floor(Date.now() / 1000),
+    clockSkew: Math.max(0, Number(block.timestamp) - Math.floor(Date.now() / 1000)),
   };
 }
 

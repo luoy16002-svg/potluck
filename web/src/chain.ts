@@ -4,6 +4,7 @@ import {
   custom,
   defineChain,
   http,
+  type Account,
   type Address,
   type Chain,
   type PublicClient,
@@ -18,6 +19,7 @@ export const robinhoodTestnet = defineChain({
   nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
   rpcUrls: { default: { http: ['https://rpc.testnet.chain.robinhood.com/rpc'] } },
   blockExplorers: { default: { name: 'Explorer', url: 'https://explorer.testnet.chain.robinhood.com' } },
+  contracts: { multicall3: { address: '0xcA11bde05977b3631167028862bE2a173976CA11' } },
   testnet: true,
 });
 
@@ -53,9 +55,18 @@ export function chainById(id: number): Chain {
 const publicClients = new Map<number, PublicClient>();
 export function publicClient(chain: Chain): PublicClient {
   if (!publicClients.has(chain.id)) {
-    publicClients.set(chain.id, createPublicClient({ chain, transport: http(undefined, { retryCount: 6, retryDelay: 800 }) }) as PublicClient);
+    // Reads issued together (a whole circle refresh) go out as one Multicall3 call where the chain has it; the public
+    // testnet RPC rate-limits bursts of single calls.
+    publicClients.set(chain.id, createPublicClient({ chain, batch: { multicall: true }, transport: http(undefined, { retryCount: 6, retryDelay: 800 }) }) as PublicClient);
   }
   return publicClients.get(chain.id)!;
+}
+
+/** Gas limit with 30% headroom. On Arbitrum chains the estimate includes the L1 data fee, which can move between
+ * estimation and inclusion; a bare estimate occasionally runs out of gas. Unused gas is not charged. */
+export async function gasFor(chain: Chain, req: { address: Address; abi: readonly unknown[]; functionName: string; args?: unknown[] }, account: Address | Account): Promise<bigint> {
+  const est = await publicClient(chain).estimateContractGas({ ...req, account } as never);
+  return (est * 13n) / 10n;
 }
 
 declare global {
