@@ -4,8 +4,8 @@ import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { PotluckCircleAbi } from './abi/PotluckCircle';
 import { PotluckFactoryAbi } from './abi/PotluckFactory';
 import { TestUSDGAbi } from './abi/TestUSDG';
-import { deployments, publicClient } from './chain';
-import { listCircles, readCircle, readWallet, short, usd, type Circle } from './data';
+import { deployments, gasFor, publicClient } from './chain';
+import { readCircle, readWallet, short, usd, type Circle } from './data';
 
 /**
  * Practice circle: the visitor plus two bot members that live in this browser tab.
@@ -75,15 +75,20 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
   }, [refresh]);
 
   /** A bot action: send once, wait, log. Each action has a key so it is never sent twice; failures unlock it
-   * again after a few seconds (the public RPC sometimes drops a request). */
+   * again after a few seconds (the public RPC sometimes drops a request). Returns true once the action is done. */
   const sent = useRef(new Set<string>());
+  const done = useRef(new Set<string>());
   const bot = useCallback(
     async (i: number, key: string, did: string, todo: string, req: { address: Address; abi: readonly unknown[]; functionName: string; args?: unknown[] }) => {
+      if (done.current.has(key)) return true;
       if (sent.current.has(key)) return false;
       sent.current.add(key);
       try {
-        const hash = await botWallets.current[i].writeContract({ ...req, account: bots[i], chain } as never);
-        await pc.waitForTransactionReceipt({ hash });
+        const gas = await gasFor(chain, req, bots[i]);
+        const hash = await botWallets.current[i].writeContract({ ...req, account: bots[i], chain, gas } as never);
+        const rc = await pc.waitForTransactionReceipt({ hash });
+        if (rc.status !== 'success') throw new Error('transaction reverted');
+        done.current.add(key);
         say(`Bot ${BOT_NAMES[i]}`, did);
         return true;
       } catch (e) {
@@ -103,14 +108,16 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
     const chainNow = now + skew;
     const run = async () => {
       acting.current = true;
+      const before = sent.current.size;
       try {
         for (let i = 0; i < 2; i++) {
           const a = bots[i].address.toLowerCase();
           const m = c.members.find((x) => x.address.toLowerCase() === a);
           if (c.phase === 0 && !m && botEth[i] > 0n) {
             const bal = (await readWallet(chain, d.usdg, bots[i].address, c.address)).balance;
-            if (bal < c.config.collateral + c.config.contribution * BigInt(c.config.size)) await bot(i, `${c.address}:${i}:faucet`, 'took 1,000 test USDG from the faucet', 'use the faucet', { address: d.usdg, abi: TestUSDGAbi, functionName: 'faucet' });
-            await bot(i, `${c.address}:${i}:approve`, 'approved the circle to take USDG', 'approve USDG', { address: d.usdg, abi: TestUSDGAbi, functionName: 'approve', args: [c.address, maxUint256] });
+            if (bal < c.config.collateral + c.config.contribution * BigInt(c.config.size) &&
+              !(await bot(i, `${c.address}:${i}:faucet`, 'took 1,000 test USDG from the faucet', 'use the faucet', { address: d.usdg, abi: TestUSDGAbi, functionName: 'faucet' }))) return;
+            if (!(await bot(i, `${c.address}:${i}:approve`, 'approved the circle to take USDG', 'approve USDG', { address: d.usdg, abi: TestUSDGAbi, functionName: 'approve', args: [c.address, maxUint256] }))) return;
             await bot(i, `${c.address}:${i}:join`, `joined and locked ${usd(c.config.collateral)} USDG collateral`, 'join', { address: c.address, abi: PotluckCircleAbi, functionName: 'join' });
             return;
           }
@@ -143,7 +150,8 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
         }
       } finally {
         acting.current = false;
-        void refresh();
+        // Only re-read the chain when a bot actually sent something; the 4-second poll covers the rest.
+        if (sent.current.size !== before) void refresh();
       }
     };
     void run();
@@ -156,15 +164,19 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
     try {
       for (let i = 0; i < 2; i++) {
         if (botEth[i] >= BOT_GAS / 2n) continue;
-        const hash = await wallet.sendTransaction({ account: wallet.account ?? account, chain, to: bots[i].address, value: BOT_GAS } as never);
-        await pc.waitForTransactionReceipt({ hash });
+        const from = wallet.account ?? account;
+        const gas = ((await pc.estimateGas({ account: from, to: bots[i].address, value: BOT_GAS })) * 13n) / 10n;
+        const hash = await wallet.sendTransaction({ account: from, chain, to: bots[i].address, value: BOT_GAS, gas } as never);
+        const rc = await pc.waitForTransactionReceipt({ hash });
+        if (rc.status !== 'success') throw new Error('transaction reverted');
         say('You', `sent gas to Bot ${BOT_NAMES[i]}`);
       }
     } catch (e) {
       say('You', `funding failed: ${(e as { shortMessage?: string }).shortMessage ?? (e as Error).message}`);
     } finally {
+      // Refresh first, so the button cannot be pressed again while the old balances are still shown.
+      await refresh().catch(() => undefined);
       setBusy(false);
-      void refresh();
     }
   }
 
@@ -172,8 +184,10 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
     setBusy(true);
     const cfg = { token: d.usdg, contribution: CONTRIBUTION, collateral: CONTRIBUTION, size: 3, roundDuration: ROUND, joinWindow: 3600, bondBps: 2000, maxDiscountBps: 1000, mode: 1 };
     const ok = await send('Create practice circle', { address: d.factory, abi: PotluckFactoryAbi, functionName: 'createCircle', args: ['Practice circle', cfg] });
-    if (ok) {
-      const [latest] = await listCircles(chain, 1);
+    if (ok && account) {
+      // This visitor's newest circle (the factory's global newest could be someone else's practice circle).
+      const created = (await pc.readContract({ address: d.factory, abi: PotluckFactoryAbi, functionName: 'circlesCreatedBy', args: [account] })) as Address[];
+      const latest = created[created.length - 1];
       setCircleAddr(latest);
       try {
         localStorage.setItem(`potluck.practice.${chain.id}`, latest);
@@ -181,6 +195,8 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
         /* ignore */
       }
       say('You', 'created a 3-member auction circle: 10 USDG a round, 1-minute rounds');
+      // Load it before unlocking the page, so the create button cannot be pressed twice.
+      setC(await readCircle(chain, latest).catch(() => null));
     }
     setBusy(false);
   }
@@ -227,7 +243,8 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
         </li>
         <li className={step > 2 ? 'done' : step === 2 ? 'now' : ''}>
           <b>Create the practice circle</b>: 3 members, 10 USDG a round, auction mode, 1-minute rounds.
-          {step === 2 && <button className="btn" disabled={busy} onClick={createCircle}>Create practice circle</button>}
+          {step === 2 && !circleAddr && <button className="btn" disabled={busy} onClick={createCircle}>Create practice circle</button>}
+          {step === 2 && circleAddr && <span className="muted small"> Loading the circle…</span>}
         </li>
         <li className={step > 3 ? 'done' : step === 3 ? 'now' : ''}>
           <b>Join</b> by locking 10 USDG collateral. The bots join on their own.

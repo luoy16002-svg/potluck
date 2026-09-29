@@ -22,7 +22,7 @@ KEYS = [env['DEPLOYER_KEY']] + env['DEMO_KEYS'].split(',')
 def cast(*a):
     """cast with retries: the public testnet RPC sometimes returns empty or errors for a minute."""
     for _ in range(20):
-        r = subprocess.run(['cast', *a], capture_output=True, text=True)
+        r = subprocess.run(['cast', *a], capture_output=True, text=True, encoding='utf-8', errors='replace')
         if a[0] == 'send' or (r.returncode == 0 and r.stdout.strip()):
             return r
         time.sleep(3)
@@ -47,7 +47,7 @@ def send(key, sig, *args):
     return False
 
 
-addr = {subprocess.run(['cast', 'wallet', 'address', k], capture_output=True, text=True).stdout.strip().lower(): k for k in KEYS}
+addr = {subprocess.run(['cast', 'wallet', 'address', k], capture_output=True, text=True, encoding='utf-8', errors='replace').stdout.strip().lower(): k for k in KEYS}
 members = [m.strip().lower() for m in call('members()(address[])').strip('[]').split(',')] if False else None
 out = cast('call', '--rpc-url', RPC, C, 'members()(address[])').stdout.strip().strip('[]')
 members = [m.strip().lower() for m in out.split(',') if m.strip()]
