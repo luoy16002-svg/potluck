@@ -18,3 +18,8 @@ runs = 512
 [rpc_endpoints]
 arbitrum_sepolia = "https://sepolia-rollup.arbitrum.io/rpc"
 robinhood_testnet = "https://rpc.testnet.chain.robinhood.com/rpc"
+
+[invariant]
+runs = 256
+depth = 60
+fail_on_revert = false

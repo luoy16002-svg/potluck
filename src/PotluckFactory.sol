@@ -31,11 +31,12 @@ contract PotluckFactory {
 
     function createCircle(string calldata name, PotluckCircle.Config calldata c) external returns (address circle) {
         circle = Clones.clone(implementation);
-        reputation.authorize(circle);
-        PotluckCircle(circle).initialize(msg.sender, name, c, address(reputation));
         _circles.push(circle);
         _createdBy[msg.sender].push(circle);
         emit CircleCreated(circle, msg.sender, name, address(c.token), c.contribution, c.size, c.mode);
+        // Both calls go to contracts this factory deployed itself.
+        reputation.authorize(circle);
+        PotluckCircle(circle).initialize(msg.sender, name, c, address(reputation));
     }
 
     function circleCount() external view returns (uint256) {

@@ -1,5 +1,7 @@
 # Potluck — savings circles on Arbitrum
 
+[![ci](https://github.com/luoy16002-svg/potluck/actions/workflows/ci.yml/badge.svg)](https://github.com/luoy16002-svg/potluck/actions/workflows/ci.yml)
+
 Over a billion people save in **rotating savings circles**: *hui* (会) in China, *arisan* in Indonesia, *tanda* in Mexico, *susu* in Ghana, *chit funds* in India, *paluwagan* in the Philippines. A group agrees on an amount, everyone pays in each round, and each round one member takes the whole pot. For people without access to credit, it is how a first motorbike, a shop's stock or school fees get paid for.
 
 It runs on trust, and it fails the same way everywhere: someone takes the pot early and stops paying.
@@ -10,7 +12,16 @@ It runs on trust, and it fails the same way everywhere: someone takes the pot ea
 - **A winner's bond.** Whoever takes the pot early has part of it held back (capped at what they still owe) and gets it back at the end. A winner who walks away is covered by their own bond first.
 - **Auction mode, the way *hui* and chit funds actually work.** Members who need money now bid a discount to take this round's pot; the discount is paid to everyone else. People who can wait earn interest, people who can't pay a fair, market-set price.
 - **A portable savings record.** When a circle ends, each member's on-time payments, missed payments and defaults are written to `PotluckReputation`, an open on-chain registry any lender, merchant or new circle can read.
-- **No admin keys.** There is no owner and no function that moves funds outside the rules. Circles are minimal-proxy clones of one audited-by-tests implementation.
+- **No admin keys, pull payments.** There is no owner and no function that moves funds outside the rules. Settlement only credits balances and each member claims their own money, so one frozen or broken address can never lock the circle. Circles are minimal-proxy clones of one implementation.
+
+## Try it in three minutes (for judges)
+
+1. Open **https://luoy16002-svg.github.io/potluck/#/practice** and connect MetaMask or Rabby. The app adds **Robinhood Chain Testnet** for you. Get test ETH from the [Robinhood Chain faucet](https://faucet.testnet.chain.robinhood.com/).
+2. Click **Send gas to the bots**. Two bot members live in your browser tab and join, pay, open the bidding and settle rounds on their own.
+3. Create the practice circle, take test USDG from the built-in faucet, join, and play three one-minute rounds. Pay each round, outbid the bots to take the pot early, claim your payout, and withdraw your collateral at the end.
+4. Your savings score updates on chain. Look it up under **Savings score**.
+
+Every step is a real transaction on Robinhood Chain Testnet. The finished circles on the home page were run the same way.
 
 ## How a circle runs
 
@@ -46,9 +57,9 @@ Any 6-decimal ERC-20 works as the circle's token; on Arbitrum One the frontend d
 forge test
 ```
 
-14 tests, including a fuzz test (512 runs per session) that runs random circles — random sizes, bond ratios, bids and ~20% missed payments — to completion and asserts that **no token is created or stranded**: after every member withdraws, the circle holds exactly zero and the members' total equals what they started with.
+15 unit and fuzz tests plus 3 invariant tests. The fuzz test (512 runs) plays random circles — random sizes, bond ratios, bids and ~20% missed payments — to completion and asserts that **no token is created or stranded**. The invariant suite fires 15,000+ random calls (join, pay, bid, settle, claim, withdraw, time jumps) and checks after every call that the circle holds exactly what it owes. One test freezes a member's address in a USDG-like token and shows the rest of the circle still settles and pays out. Details and the Slither review: [SECURITY.md](SECURITY.md).
 
-Covered: full fixed-order cycle with net-zero outcome, bond cap at remaining obligation, early settlement rules, collateral coverage, default and skip, bond-first coverage for winners who stop paying, auction ordering, discount sharing with rounding dust, bid rules, cancel/refund, config validation, registry access control, and the implementation's disabled initializer.
+Covered: frozen-member isolation, full fixed-order cycle with net-zero outcome, bond cap at remaining obligation, early settlement rules, collateral coverage, default and skip, bond-first coverage for winners who stop paying, auction ordering, discount sharing with rounding dust, bid rules, cancel/refund, config validation, registry access control, and the implementation's disabled initializer.
 
 ## Deployments
 
@@ -56,14 +67,17 @@ Live on **Robinhood Chain Testnet** (chain id 46630), an Arbitrum Orbit chain. A
 
 | Contract | Address |
 |---|---|
-| PotluckFactory | [`0x7058BA553282753638F38800999828F89A7eAb94`](https://explorer.testnet.chain.robinhood.com/address/0x7058BA553282753638F38800999828F89A7eAb94) |
-| PotluckReputation | [`0x82e6aF09B6d5621D555679fa92Ea3a0b9eBC73F0`](https://explorer.testnet.chain.robinhood.com/address/0x82e6aF09B6d5621D555679fa92Ea3a0b9eBC73F0) |
+| PotluckFactory | [`0x1A88423eaE02fE8DF120019D99c859679F20bA0C`](https://explorer.testnet.chain.robinhood.com/address/0x1A88423eaE02fE8DF120019D99c859679F20bA0C) |
+| PotluckCircle (implementation) | [`0x88E3827D5049022EEb5E31Dc2E2e54f7015C11d1`](https://explorer.testnet.chain.robinhood.com/address/0x88E3827D5049022EEb5E31Dc2E2e54f7015C11d1) |
+| PotluckReputation | [`0x03B0A468460Ea1D21aabEeBc3B1333f86AA3F37C`](https://explorer.testnet.chain.robinhood.com/address/0x03B0A468460Ea1D21aabEeBc3B1333f86AA3F37C) |
 | TestUSDG | [`0x7877413D96C2AEa83DeC6A858248d580fDad509C`](https://explorer.testnet.chain.robinhood.com/address/0x7877413D96C2AEa83DeC6A858248d580fDad509C) |
 
-Circles running on it (seeded with `script/seed-testnet.sh`):
+All verified on the explorer. Circles run on this deployment (`script/seed-testnet.sh` + `script/run_circle.py`):
 
-- **Studio rent pool**, fixed order, 3 members, all 3 rounds paid out and recorded in the savings score: [`0x585F23E9875C56B98df519b86EF6Aa3FA1C4025d`](https://explorer.testnet.chain.robinhood.com/address/0x585F23E9875C56B98df519b86EF6Aa3FA1C4025d)
-- **Friday lunch circle**, auction, 5 members: round 1 went to a 25 USDG bid, the discount was shared by the other four and 95 USDG of the winner's payout is held as bond: [`0xe65330A87332e5129CCFe8e04F4F5346c10F0CA2`](https://explorer.testnet.chain.robinhood.com/address/0xe65330A87332e5129CCFe8e04F4F5346c10F0CA2)
+- **Studio rent pool**, fixed order, 3 members, completed and recorded in the savings score: [`0xE0Da5F23FE743c53d2b76Ea663744115dccf01dd`](https://explorer.testnet.chain.robinhood.com/address/0xE0Da5F23FE743c53d2b76Ea663744115dccf01dd)
+- **Friday lunch circle**, auction, 5 members, a bid in every round: [`0xFb4B994917167F1bce4B31A5664D5F9AA3cD9E8b`](https://explorer.testnet.chain.robinhood.com/address/0xFb4B994917167F1bce4B31A5664D5F9AA3cD9E8b)
+
+An earlier version that paid winners directly (push payments) is archived in `deployments/archive/`. The current version credits payouts and lets each member claim them. See [SECURITY.md](SECURITY.md) for why.
 
 The same contracts deploy unchanged to Arbitrum One or Arbitrum Sepolia (`forge script script/Deploy.s.sol --rpc-url <rpc> --broadcast`, with `USDG=<address>` to use native USDG).
 

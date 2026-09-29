@@ -38,6 +38,7 @@ export type MemberInfo = {
   bond: bigint;
   contributed: bigint;
   received: bigint;
+  claimable: bigint;
   paidThisRound: boolean;
 };
 

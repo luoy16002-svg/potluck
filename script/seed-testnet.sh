@@ -8,7 +8,9 @@ D=deployments/$CHAIN.json
 F=$(python -c "import json;print(json.load(open('$D'))['factory'])")
 U=$(python -c "import json;print(json.load(open('$D'))['usdg'])")
 IFS=',' read -ra DK <<< "$DEMO_KEYS"; K=($DEPLOYER_KEY "${DK[@]}")
-tx() { for try in 1 2 3; do cast send --rpc-url $RPC --private-key "$1" "${@:2}" >/dev/null 2>&1 && return 0; sleep 3; done; echo "FAILED: ${@:2}"; exit 1; }
+# The public RPC sometimes answers a sent transaction with a null receipt; treat that as sent (it was mined),
+# and only retry real transport errors, so a retry never re-sends an action that already happened.
+tx() { for try in 1 2 3; do out=$(cast send --rpc-url $RPC --private-key "$1" "${@:2}" 2>&1 >/dev/null) && return 0; echo "$out" | grep -q "null response" && { sleep 3; return 0; }; sleep 3; done; echo "FAILED: ${@:2}"; exit 1; }
 latest() { cast call --rpc-url $RPC $F "latestCircles(uint256)(address[])" 1 | tr -d '[]'; }
 MAX=115792089237316195423570985008687907853269984665640564039457584007913129639935
 CFG_T="(address,uint128,uint128,uint8,uint32,uint32,uint16,uint16,uint8)"
