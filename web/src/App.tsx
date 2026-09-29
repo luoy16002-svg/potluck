@@ -95,7 +95,7 @@ export default function App() {
       }
       try {
         setToast({ text: `${label}…` });
-        const hash = await wallet.writeContract({ ...req, account, chain } as never);
+        const hash = await wallet.writeContract({ ...req, account: wallet.account ?? account, chain } as never);
         setToast({ text: `${label}: waiting for the block…`, link: explorerTx(chain, hash) });
         const rc = await publicClient(chain).waitForTransactionReceipt({ hash });
         if (rc.status !== 'success') throw new Error('Transaction reverted');

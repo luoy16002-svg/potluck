@@ -52,10 +52,20 @@ Covered: full fixed-order cycle with net-zero outcome, bond cap at remaining obl
 
 ## Deployments
 
-| Network | Factory | Reputation | Token |
-|---|---|---|---|
-| Arbitrum Sepolia | see [`deployments/421614.json`](deployments/) | | TestUSDG |
-| Robinhood Chain Testnet | see [`deployments/46630.json`](deployments/) | | TestUSDG |
+Live on **Robinhood Chain Testnet** (chain id 46630), an Arbitrum Orbit chain. App: https://luoy16002-svg.github.io/potluck/
+
+| Contract | Address |
+|---|---|
+| PotluckFactory | [`0x7058BA553282753638F38800999828F89A7eAb94`](https://explorer.testnet.chain.robinhood.com/address/0x7058BA553282753638F38800999828F89A7eAb94) |
+| PotluckReputation | [`0x82e6aF09B6d5621D555679fa92Ea3a0b9eBC73F0`](https://explorer.testnet.chain.robinhood.com/address/0x82e6aF09B6d5621D555679fa92Ea3a0b9eBC73F0) |
+| TestUSDG | [`0x7877413D96C2AEa83DeC6A858248d580fDad509C`](https://explorer.testnet.chain.robinhood.com/address/0x7877413D96C2AEa83DeC6A858248d580fDad509C) |
+
+Circles running on it (seeded with `script/seed-testnet.sh`):
+
+- **Studio rent pool**, fixed order, 3 members, all 3 rounds paid out and recorded in the savings score: [`0x585F23E9875C56B98df519b86EF6Aa3FA1C4025d`](https://explorer.testnet.chain.robinhood.com/address/0x585F23E9875C56B98df519b86EF6Aa3FA1C4025d)
+- **Friday lunch circle**, auction, 5 members: round 1 went to a 25 USDG bid, the discount was shared by the other four and 95 USDG of the winner's payout is held as bond: [`0xe65330A87332e5129CCFe8e04F4F5346c10F0CA2`](https://explorer.testnet.chain.robinhood.com/address/0xe65330A87332e5129CCFe8e04F4F5346c10F0CA2)
+
+The same contracts deploy unchanged to Arbitrum One or Arbitrum Sepolia (`forge script script/Deploy.s.sol --rpc-url <rpc> --broadcast`, with `USDG=<address>` to use native USDG).
 
 ## Frontend
 
