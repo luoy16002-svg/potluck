@@ -80,8 +80,12 @@ export function demoAccountIndex(): number | null {
 
 export async function connectWallet(chain: Chain): Promise<{ wallet: WalletClient; account: Address }> {
   const demo = demoAccountIndex();
-  if (demo !== null && chain.id === localChain.id) {
-    const account = privateKeyToAccount(DEMO_KEYS[demo]);
+  // Recording mode: Anvil keys on the local chain, or keys from web/.env.local (never committed, dev server only)
+  // on a testnet, so product walkthroughs can be captured without a browser wallet.
+  const envKeys = ((import.meta.env.VITE_DEMO_KEYS as string | undefined) ?? '').split(',').filter(Boolean) as `0x${string}`[];
+  const key = demo === null ? null : chain.id === localChain.id ? DEMO_KEYS[demo] : import.meta.env.DEV ? envKeys[demo] : null;
+  if (key) {
+    const account = privateKeyToAccount(key);
     return { wallet: createWalletClient({ account, chain, transport: http() }), account: account.address };
   }
   if (!window.ethereum) throw new Error('No browser wallet found. Install MetaMask or Rabby to continue.');
