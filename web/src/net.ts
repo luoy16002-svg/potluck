@@ -40,7 +40,7 @@ const NETS: Record<number, Net> = {
     gasFaucet: 'https://faucet.monad.xyz',
     stableFaucet: (_token, to) => ({ address: AGORA_FAUCET, abi: AgoraFaucetAbi, functionName: 'requestFunds', args: [to] }),
     stableFaucetLabel: 'Get 10,000 test AUSD',
-    botGas: parseEther('0.2'),
+    botGas: parseEther('0.5'),
     visitorFundsBots: true,
     practiceRound: 60,
     pollMs: 1000,

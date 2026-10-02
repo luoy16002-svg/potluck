@@ -19,7 +19,7 @@ It runs on trust, and it fails the same way everywhere: someone takes the pot ea
 1. Open **https://luoy16002-svg.github.io/potluck/?chain=10143#/practice** and connect MetaMask or Rabby. The app adds **Monad Testnet** for you. Get test MON from the [Monad faucet](https://faucet.monad.xyz).
 2. Click **Get 10,000 test AUSD** (Agora's testnet faucet), then **Fund the bots**: two bot members that live in your browser tab get a little MON for gas and 50 AUSD each. From then on they join, pay, open the bidding and settle rounds on their own.
 3. Create the practice circle and play three one-minute rounds: pay each round, outbid the bots to take the pot early, claim your payout, and withdraw your collateral at the end.
-4. Open the circle page while it runs: the **Live** feed shows every payment, bid and payout about a second after it lands. Your savings score updates on chain under **Savings score**.
+4. Open the circle page while it runs: the **Live** feed shows every payment, bid and payout about half a second after it is sent. Your savings score updates on chain under **Savings score**.
 
 Every step is a real transaction on Monad Testnet.
 
@@ -72,10 +72,10 @@ Covered: frozen-member isolation, full fixed-order cycle with net-zero outcome, 
 
 ## On Monad
 
-Monad makes a savings circle feel like a group chat: a payment, a bid or a payout shows up for every member about a second after it is sent.
+Monad makes a savings circle feel like a group chat: a payment, a bid or a payout shows up for every member about half a second after it is sent.
 
 - **Agora AUSD.** Circles on Monad are denominated in AUSD, Agora's dollar, using Agora's own testnet token and faucet (`requestFunds`). The practice flow has the visitor hand the bots their AUSD, because the testnet faucet serves one request a minute for everyone.
-- **Live circle feed.** Each circle page follows the circle's events block by block (public Monad RPCs cap `eth_getLogs` at 100 blocks, so the feed reads forward in small chunks every second).
+- **Live circle feed.** Each circle page subscribes to Monad's `monadLogs` stream over WebSocket, which delivers a log as soon as its block is proposed. A bid or payment shows up for every member about half a second after it is sent, marked *proposed*, and turns *finalized* under a second later. An HTTP reader backfills the last 100 blocks (the public RPC limit for `eth_getLogs`) and covers the other chains.
 - **Send it on.** After a payout, a member can send part of it straight to another wallet, such as family in another country. Most savings circles span borders: a *tanda* between Los Angeles and Guadalajara, a *hui* between Sydney and Ho Chi Minh City.
 - **Gas limits sized for Monad.** Monad charges the gas limit, not the gas used, so the app adds 10% headroom there instead of the 30% it needs on Arbitrum chains.
 
