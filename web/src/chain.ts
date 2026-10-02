@@ -23,6 +23,16 @@ export const robinhoodTestnet = defineChain({
   testnet: true,
 });
 
+export const monadTestnet = defineChain({
+  id: 10143,
+  name: 'Monad Testnet',
+  nativeCurrency: { name: 'Monad', symbol: 'MON', decimals: 18 },
+  rpcUrls: { default: { http: ['https://testnet-rpc.monad.xyz'] } },
+  blockExplorers: { default: { name: 'MonadVision', url: 'https://testnet.monadvision.com' } },
+  contracts: { multicall3: { address: '0xcA11bde05977b3631167028862bE2a173976CA11' } },
+  testnet: true,
+});
+
 export const localChain = defineChain({
   id: 31337,
   name: 'Local',
@@ -43,7 +53,7 @@ for (const [path, d] of Object.entries(files)) {
   deployments[id] = d;
 }
 
-const allChains: Chain[] = [arbitrumSepolia, robinhoodTestnet, localChain];
+const allChains: Chain[] = [arbitrumSepolia, robinhoodTestnet, monadTestnet, localChain];
 export const chains = allChains.filter(
   (c) => deployments[c.id] && (c.id !== localChain.id || location.hostname === 'localhost' || location.hostname === '127.0.0.1'),
 );
@@ -62,11 +72,12 @@ export function publicClient(chain: Chain): PublicClient {
   return publicClients.get(chain.id)!;
 }
 
-/** Gas limit with 30% headroom. On Arbitrum chains the estimate includes the L1 data fee, which can move between
- * estimation and inclusion; a bare estimate occasionally runs out of gas. Unused gas is not charged. */
+/** Gas limit with headroom. On Arbitrum chains the estimate includes the L1 data fee, which can move between
+ * estimation and inclusion, so a bare estimate occasionally runs out of gas (30% there; unused gas is not charged).
+ * Monad charges the full gas limit, so it gets 10%. */
 export async function gasFor(chain: Chain, req: { address: Address; abi: readonly unknown[]; functionName: string; args?: unknown[] }, account: Address | Account): Promise<bigint> {
   const est = await publicClient(chain).estimateContractGas({ ...req, account } as never);
-  return (est * 13n) / 10n;
+  return chain.id === monadTestnet.id ? (est * 11n) / 10n : (est * 13n) / 10n;
 }
 
 declare global {

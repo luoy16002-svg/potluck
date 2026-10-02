@@ -5,6 +5,8 @@ import { PotluckFactoryAbi } from './abi/PotluckFactory';
 import { TestUSDGAbi } from './abi/TestUSDG';
 import { Practice } from './Practice';
 import { chainById, chains, connectWallet, demoAccountIndex, deployments, explorerAddress, explorerTx, gasFor, publicClient } from './chain';
+import { net } from './net';
+import { useLiveEvents, type LiveEvent } from './live';
 import {
   MODES,
   PHASES,
@@ -54,7 +56,7 @@ const niceDuration = (s: number) =>
 
 export default function App() {
   const [route, setRoute] = useState<Route>(parseRoute);
-  const [chain, setChain] = useState<Chain>(() => chainById(Number(localStorage.getItem('potluck.chain')) || chains[0]?.id));
+  const [chain, setChain] = useState<Chain>(() => chainById(Number(new URLSearchParams(location.search).get('chain')) || Number(localStorage.getItem('potluck.chain')) || chains[0]?.id));
   const [account, setAccount] = useState<Address | null>(null);
   const [wallet, setWallet] = useState<WalletClient | null>(null);
   const [toast, setToast] = useState<{ text: string; link?: string | null; kind?: 'err' } | null>(null);
@@ -175,9 +177,10 @@ const FRIENDLY: Record<string, string> = {
   RoundStillOpen: 'the round is still open',
   NotCancellable: 'only the creator can cancel before the join window ends',
   NothingToWithdraw: 'nothing left to withdraw',
-  Cooldown: 'the test USDG faucet gives 1,000 per hour; try again later',
-  ERC20InsufficientBalance: 'not enough USDG in your wallet',
-  ERC20InsufficientAllowance: 'approve USDG first',
+  Cooldown: 'the test faucet is on cooldown; try again later',
+  MaxFrequencyExceeded: 'the AUSD test faucet serves one request a minute for everyone; try again in a minute',
+  ERC20InsufficientBalance: 'not enough stablecoin in your wallet',
+  ERC20InsufficientAllowance: 'approve the token first',
 };
 
 /** Turn wallet and contract errors into one plain sentence. */
@@ -186,7 +189,7 @@ function explain(e: unknown): string {
   const name = raw.match(/Error: (\w+)\(/)?.[1] ?? raw.match(/reverted with the following reason:\s*(\w+)/)?.[1];
   if (name && FRIENDLY[name]) return FRIENDLY[name];
   if (/User rejected|denied/i.test(raw)) return 'you rejected the request in your wallet';
-  if (/insufficient funds/i.test(raw)) return 'not enough test ETH for gas; use the faucet link on the Try it page';
+  if (/insufficient funds/i.test(raw)) return 'not enough test gas; use the faucet link on the Try it page';
   return ((e as { shortMessage?: string }).shortMessage ?? (e as Error).message ?? 'unknown error').split('\n')[0];
 }
 
@@ -228,7 +231,7 @@ function Home({ chain, tick, send, account }: { chain: Chain; tick: number; send
     <main className="page">
       <section className="hero">
         <div>
-          <p className="eyebrow">Savings circles on Arbitrum · USDG</p>
+          <p className="eyebrow">{net(chain.id).tagline}</p>
           <h1>
             Save together.
             <br />
@@ -279,7 +282,7 @@ function Home({ chain, tick, send, account }: { chain: Chain; tick: number; send
               </div>
               <h3>{c.name}</h3>
               <div className="card-nums">
-                <div><b>{usd(c.config.contribution, 0)}</b><span>USDG / round</span></div>
+                <div><b>{usd(c.config.contribution, 0)}</b><span>{net(chain.id).sym} / round</span></div>
                 <div><b>{c.members.length}/{c.config.size}</b><span>members</span></div>
                 <div><b>{usd(c.config.contribution * BigInt(c.config.size), 0)}</b><span>pot</span></div>
               </div>
@@ -334,6 +337,7 @@ function MiniRing({ circle }: { circle: Circle }) {
 
 function CreateForm({ chain, send, account }: { chain: Chain; send: Send; account: Address | null }) {
   const d = deployments[chain.id];
+  const sym = net(chain.id).sym;
   const [f, setF] = useState({ name: 'Friday lunch circle', contribution: '100', size: '5', round: '604800', mode: '1', collateral: '100', bond: '20', discount: '10' });
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
   const auction = f.mode === '1';
@@ -365,7 +369,7 @@ function CreateForm({ chain, send, account }: { chain: Chain; send: Send; accoun
       <p className="muted">You join like everyone else after creating it. The contract has no owner: once it starts, nobody can change the rules.</p>
       <div className="grid">
         <label className="wide">Name<input value={f.name} onChange={set('name')} maxLength={48} /></label>
-        <label>Each round (USDG)<input value={f.contribution} onChange={set('contribution')} inputMode="decimal" /></label>
+        <label>Each round ({sym})<input value={f.contribution} onChange={set('contribution')} inputMode="decimal" /></label>
         <label>Members<input value={f.size} onChange={set('size')} inputMode="numeric" /></label>
         <label>Round length
           <select value={f.round} onChange={set('round')}>
@@ -382,12 +386,12 @@ function CreateForm({ chain, send, account }: { chain: Chain; send: Send; accoun
             <option value="1">Auction (highest discount)</option>
           </select>
         </label>
-        <label>Collateral (USDG)<input value={f.collateral} onChange={set('collateral')} inputMode="decimal" /></label>
+        <label>Collateral ({sym})<input value={f.collateral} onChange={set('collateral')} inputMode="decimal" /></label>
         <label>Winner's bond (%)<input value={f.bond} onChange={set('bond')} inputMode="decimal" /></label>
         {auction && <label>Max auction discount (%)<input value={f.discount} onChange={set('discount')} inputMode="decimal" /></label>}
       </div>
       <p className="summary">
-        {f.size} people × {f.contribution} USDG = a <b>{pot.toLocaleString()} USDG</b> pot every {niceDuration(Number(f.round))}, for {f.size} rounds.
+        {f.size} people × {f.contribution} {sym} = a <b>{pot.toLocaleString()} {sym}</b> pot every {niceDuration(Number(f.round))}, for {f.size} rounds.
         {auction ? ` Members bid up to ${f.discount}% of the pot to take it early; the discount is paid to the others.` : ' Paid out in the order people join.'}
       </p>
       <button className="btn big" onClick={create}>{account ? 'Create circle' : 'Connect wallet to create'}</button>
@@ -404,14 +408,15 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
   const [bid, setBid] = useState('');
   const wallNow = useNow();
   const [poll, setPoll] = useState(0);
+  const live = useLiveEvents(chain, address, net(chain.id).pollMs);
 
   useEffect(() => {
-    const t = setInterval(() => setPoll((p) => p + 1), 6000);
+    const t = setInterval(() => setPoll((p) => p + 1), Math.min(6000, net(chain.id).pollMs * 3));
     return () => clearInterval(t);
-  }, []);
+  }, [chain.id]);
   useEffect(() => {
     readCircle(chain, address).then(setC, (e) => setErr((e as Error).message));
-  }, [chain, address, tick, poll]);
+  }, [chain, address, tick, poll, live.events.length]);
   useEffect(() => {
     if (!account || !c) return setMe(null);
     readWallet(chain, c.config.token, account, address).then(setMe);
@@ -426,8 +431,10 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
   const pot = cfg.contribution * BigInt(cfg.size);
   const token = cfg.token;
   const isTestToken = token.toLowerCase() === deployments[chain.id].usdg.toLowerCase();
+  const N = net(chain.id);
+  const sym = N.sym;
   const needsApproval = (amount: bigint) => !me || me.allowance < amount;
-  const approve = () => send('Approve USDG', { address: token, abi: TestUSDGAbi, functionName: 'approve', args: [address, maxUint256] });
+  const approve = () => send(`Approve ${sym}`, { address: token, abi: TestUSDGAbi, functionName: 'approve', args: [address, maxUint256] });
   const call = (label: string, functionName: string, args: unknown[] = []) => send(label, { address, abi: PotluckCircleAbi, functionName, args });
   const auction = cfg.mode === 1;
   const left = c.deadline - now;
@@ -443,8 +450,8 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
           <p className="eyebrow">{MODES[cfg.mode]} · {cfg.size} members · rounds every {niceDuration(cfg.roundDuration)}</p>
           <h1>{c.name}</h1>
           <div className="facts">
-            <div><span>Each round</span><b>{usd(cfg.contribution)} USDG</b></div>
-            <div><span>Pot</span><b>{usd(pot)} USDG</b></div>
+            <div><span>Each round</span><b>{usd(cfg.contribution)} {sym}</b></div>
+            <div><span>Pot</span><b>{usd(pot)} {sym}</b></div>
             <div><span>Collateral</span><b>{usd(cfg.collateral)}</b></div>
             <div><span>Winner's bond</span><b>{cfg.bondBps / 100}%</b></div>
             {auction && <div><span>Max discount</span><b>{cfg.maxDiscountBps / 100}%</b></div>}
@@ -465,25 +472,25 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
       </section>
 
       <section className="circle-body">
-        <BigRing c={c} account={account} />
+        <BigRing c={c} account={account} sym={sym} />
         <div className="panel">
           <h3>Your seat</h3>
           {!account && <p className="muted">Connect a wallet to join or pay.</p>}
           {account && me && (
             <p className="muted small">
-              Wallet: {usd(me.balance)} USDG · {Number(me.eth) / 1e18 < 0.0001 ? 'no gas' : `${(Number(me.eth) / 1e18).toFixed(4)} ETH`}
+              Wallet: {usd(me.balance)} {sym} · {Number(me.eth) / 1e18 < 0.0001 ? 'no gas' : `${(Number(me.eth) / 1e18).toFixed(4)} ${N.gasSym}`}
             </p>
           )}
           {account && isTestToken && me && me.balance < cfg.collateral + cfg.contribution && (
-            <button className="btn ghost" onClick={() => send('Get 1,000 test USDG', { address: token, abi: TestUSDGAbi, functionName: 'faucet' })}>
-              Get 1,000 test USDG
+            <button className="btn ghost" onClick={() => send(N.stableFaucetLabel, N.stableFaucet(token, account!))}>
+              {N.stableFaucetLabel}
             </button>
           )}
           {c.phase === 0 && account && !mine && (
             needsApproval(cfg.collateral) ? (
-              <button className="btn" onClick={approve}>Approve USDG</button>
+              <button className="btn" onClick={approve}>Approve {sym}</button>
             ) : (
-              <button className="btn" onClick={() => call('Join circle', 'join')}>Join · lock {usd(cfg.collateral)} USDG</button>
+              <button className="btn" onClick={() => call('Join circle', 'join')}>Join · lock {usd(cfg.collateral)} {sym}</button>
             )
           )}
           {mine && (
@@ -497,13 +504,14 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
             </div>
           )}
           {mine && mine.claimable > 0n && (
-            <button className="btn" onClick={() => call('Claim payout', 'claim')}>Claim {usd(mine.claimable)} USDG</button>
+            <button className="btn" onClick={() => call('Claim payout', 'claim')}>Claim {usd(mine.claimable)} {sym}</button>
           )}
+          {mine && me && me.balance > 0n && c.phase >= 1 && <SendHome token={token} sym={sym} balance={me.balance} send={send} />}
           {c.phase === 1 && mine && !mine.defaulted && !mine.paidThisRound && (
             needsApproval(cfg.contribution) ? (
-              <button className="btn" onClick={approve}>Approve USDG</button>
+              <button className="btn" onClick={approve}>Approve {sym}</button>
             ) : (
-              <button className="btn" onClick={() => call(`Pay round ${c.currentRound}`, 'contribute')}>Pay round {c.currentRound} · {usd(cfg.contribution)} USDG</button>
+              <button className="btn" onClick={() => call(`Pay round ${c.currentRound}`, 'contribute')}>Pay round {c.currentRound} · {usd(cfg.contribution)} {sym}</button>
             )
           )}
           {c.phase === 1 && mine?.paidThisRound && <p className="ok">✓ Paid for round {c.currentRound}</p>}
@@ -514,7 +522,7 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
                 {c.topBidder && <> Current best: <b>{usd(c.topDiscount)}</b> by {c.topBidder.toLowerCase() === account?.toLowerCase() ? 'you' : short(c.topBidder)}.</>}
               </p>
               <div className="row">
-                <input value={bid} onChange={(e) => setBid(e.target.value)} placeholder="discount in USDG" inputMode="decimal" />
+                <input value={bid} onChange={(e) => setBid(e.target.value)} placeholder={`discount in ${sym}`} inputMode="decimal" />
                 <button className="btn" onClick={() => call('Place bid', 'bid', [toUnits(bid)]).then((ok) => ok && setBid(''))}>Bid</button>
               </div>
             </div>
@@ -526,7 +534,7 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
           )}
           {(c.phase === 2 || c.phase === 3) && mine && mine.collateralLeft + mine.bond > 0n && (
             <button className="btn" onClick={() => call('Withdraw collateral and bond', 'withdraw')}>
-              Withdraw {usd(mine.collateralLeft + mine.bond + mine.claimable)} USDG
+              Withdraw {usd(mine.collateralLeft + mine.bond + mine.claimable)} {sym}
             </button>
           )}
           {c.phase === 0 && account?.toLowerCase() === c.creator.toLowerCase() && (
@@ -534,6 +542,8 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
           )}
         </div>
       </section>
+
+      <LiveFeed chain={chain} live={live} c={c} account={account} sym={sym} />
 
       <section className="members">
         <h3>Members</h3>
@@ -583,7 +593,89 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
   );
 }
 
-function BigRing({ c, account }: { c: Circle; account: Address | null }) {
+/** Sending part of a payout on to another wallet: family abroad, a second account, a shop. */
+function SendHome({ token, sym, balance, send }: { token: Address; sym: string; balance: bigint; send: Send }) {
+  const [to, setTo] = useState(() => {
+    try {
+      return localStorage.getItem('potluck.sendTo') ?? '';
+    } catch {
+      return '';
+    }
+  });
+  const [amt, setAmt] = useState('');
+  const amount = toUnits(amt.replace(/,/g, '') || '0');
+  const ok = isAddress(to) && amount > 0n && amount <= balance;
+  async function go() {
+    try {
+      localStorage.setItem('potluck.sendTo', to);
+    } catch {
+      /* ignore */
+    }
+    if (await send(`Send ${amt} ${sym}`, { address: token, abi: TestUSDGAbi, functionName: 'transfer', args: [to, amount] })) setAmt('');
+  }
+  return (
+    <div className="send-home">
+      <p className="small"><b>Send it on.</b> Pay part of your {sym} straight to family in another country or to a second wallet. It arrives in seconds.</p>
+      <div className="row">
+        <input value={to} onChange={(e) => setTo(e.target.value.trim())} placeholder="0x… address" aria-label="Recipient address" />
+        <input value={amt} onChange={(e) => setAmt(e.target.value)} placeholder={`max ${usd(balance)}`} inputMode="decimal" aria-label={`Amount in ${sym}`} />
+        <button className="btn ghost" disabled={!ok} onClick={go}>Send</button>
+      </div>
+    </div>
+  );
+}
+
+function ago(seen: number, now: number): string {
+  if (!seen) return 'earlier';
+  const s = Math.max(0, Math.round((now - seen) / 1000));
+  return s < 2 ? 'just now' : s < 60 ? `${s}s ago` : `${Math.floor(s / 60)}m ago`;
+}
+
+function LiveFeed({ chain, live, c, account, sym }: { chain: Chain; live: { events: LiveEvent[]; head: bigint | null }; c: Circle; account: Address | null; sym: string }) {
+  const now = useNow() * 1000;
+  const who = (a: unknown) => (typeof a === 'string' && account && a.toLowerCase() === account.toLowerCase() ? 'You' : short(String(a)));
+  const amt = (v: unknown) => `${usd(BigInt(v as bigint))} ${sym}`;
+  const line = (e: LiveEvent): string => {
+    const a = e.args;
+    switch (e.name) {
+      case 'Joined': return `${who(a.member)} joined (${a.memberCount}/${c.config.size})`;
+      case 'Started': return 'All seats filled: round 1 is open';
+      case 'Contributed': return `${who(a.member)} paid round ${a.round}: ${amt(a.amount)}${a.onTime ? '' : ' (late)'}`;
+      case 'BidPlaced': return `${who(a.member)} bid ${amt(a.discount)} to take round ${a.round}'s pot`;
+      case 'MissedCovered': return `${who(a.member)} missed round ${a.round}; ${amt(a.covered)} covered from collateral${a.defaulted ? ', now defaulted' : ''}`;
+      case 'RoundSettled': return `Round ${a.round} settled: ${who(a.winner)} takes ${amt(a.payout)}${BigInt(a.discount as bigint) > 0n ? ` after a ${amt(a.discount)} discount` : ''}`;
+      case 'DividendPaid': return `${who(a.member)} got ${amt(a.amount)} from the round ${a.round} discount`;
+      case 'Claimed': return `${who(a.member)} claimed ${amt(a.amount)}`;
+      case 'Withdrawn': return `${who(a.member)} withdrew ${amt(a.amount)}`;
+      case 'Completed': return 'Circle complete: savings records written on chain';
+      case 'Cancelled': return 'Circle cancelled';
+      default: return e.name;
+    }
+  };
+  return (
+    <section className="live">
+      <h3>
+        <span className="live-dot" aria-hidden /> Live
+        <span className="muted small"> {live.head !== null ? `block ${live.head.toLocaleString()}` : 'connecting…'} · updates every {net(chain.id).pollMs / 1000}s</span>
+      </h3>
+      {live.events.length === 0 ? (
+        <p className="muted small">Nothing in the last few blocks. Payments, bids and payouts appear here as they land.</p>
+      ) : (
+        <ul>
+          {live.events.map((e) => (
+            <li key={e.key} className={e.seen ? 'fresh' : ''}>
+              <span className="when">{ago(e.seen, now)}</span>
+              <span>{line(e)}</span>
+              <a href={explorerTx(chain, e.tx) ?? '#'} target="_blank" rel="noreferrer" className="muted small">tx</a>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function BigRing({ c, account, sym }: { c: Circle; account: Address | null; sym: string }) {
   const n = c.config.size;
   const R = 150;
   const current = c.phase === 1 ? (c.config.mode === 1 ? c.topBidder : c.members.find((m) => !m.won && !m.defaulted)?.address) : null;
@@ -614,7 +706,7 @@ function BigRing({ c, account }: { c: Circle; account: Address | null }) {
       <circle cx="200" cy="200" r="62" className="pot" />
       <text x="200" y="190" textAnchor="middle" className="pot-t">{c.phase === 1 ? `ROUND ${c.currentRound}` : PHASES[c.phase].toUpperCase()}</text>
       <text x="200" y="218" textAnchor="middle" className="pot-v">{usd(c.phase === 1 ? c.collected : pot, 0)}</text>
-      <text x="200" y="238" textAnchor="middle" className="pot-s">{c.phase === 1 ? `of ${usd(pot, 0)} USDG` : 'USDG pot'}</text>
+      <text x="200" y="238" textAnchor="middle" className="pot-s">{c.phase === 1 ? `of ${usd(pot, 0)} ${sym}` : `${sym} pot`}</text>
     </svg>
   );
 }
@@ -656,7 +748,7 @@ function ScorePage({ chain, address }: { chain: Chain; address?: Address }) {
             <div><span>On-time payments</span><b>{s.onTimePayments}</b></div>
             <div><span>Missed payments</span><b>{s.missedPayments}</b></div>
             <div><span>Defaults</span><b>{s.circlesDefaulted}</b></div>
-            <div><span>Total saved</span><b>{usd(s.totalContributed)} USDG</b></div>
+            <div><span>Total saved</span><b>{usd(s.totalContributed)} {net(chain.id).sym}</b></div>
           </div>
         </div>
       )}
