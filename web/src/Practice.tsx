@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createWalletClient, http, maxUint256, parseEther, type Address, type Chain, type WalletClient } from 'viem';
+import { createWalletClient, http, maxUint256, type Address, type Chain, type WalletClient } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { PotluckCircleAbi } from './abi/PotluckCircle';
 import { PotluckFactoryAbi } from './abi/PotluckFactory';
 import { TestUSDGAbi } from './abi/TestUSDG';
 import { deployments, gasFor, publicClient } from './chain';
+import { net } from './net';
 import { readCircle, readWallet, short, usd, type Circle } from './data';
 
 /**
@@ -14,13 +15,9 @@ import { readCircle, readWallet, short, usd, type Circle } from './data';
  * can go through a whole auction circle on the real testnet in about three minutes.
  */
 const BOT_NAMES = ['Ana', 'Ben'];
-const BOT_GAS = parseEther('0.00005');
-const ROUND = 60;
-const CONTRIBUTION = 10_000_000n; // 10 USDG
-const FAUCETS: Record<number, string> = {
-  46630: 'https://faucet.testnet.chain.robinhood.com/',
-  421614: 'https://www.alchemy.com/faucets/arbitrum-sepolia',
-};
+const CONTRIBUTION = 10_000_000n; // 10 dollars (6-decimal stablecoin)
+/** What a bot needs for a 3-round practice circle: collateral plus three contributions, with room to spare. */
+const BOT_STAKE = CONTRIBUTION * 5n;
 
 type Send = (label: string, req: { address: Address; abi: readonly unknown[]; functionName: string; args?: unknown[] }) => Promise<boolean>;
 type Log = { t: number; who: string; text: string };
@@ -43,6 +40,10 @@ function loadBots(chainId: number): `0x${string}`[] {
 
 export function Practice({ chain, account, wallet, send, connect }: { chain: Chain; account: Address | null; wallet: WalletClient | null; send: Send; connect: () => void }) {
   const d = deployments[chain.id];
+  const N = net(chain.id);
+  const sym = N.sym;
+  const BOT_GAS = N.botGas;
+  const ROUND = N.practiceRound;
   const pc = publicClient(chain);
   const [bots] = useState(() => loadBots(chain.id).map((k) => privateKeyToAccount(k)));
   const botWallets = useRef(bots.map((a) => createWalletClient({ account: a, chain, transport: http(undefined, { retryCount: 5, retryDelay: 800 }) })));
@@ -50,6 +51,7 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
   const [c, setC] = useState<Circle | null>(null);
   const [me, setMe] = useState<{ balance: bigint; allowance: bigint; eth: bigint } | null>(null);
   const [botEth, setBotEth] = useState<bigint[]>([0n, 0n]);
+  const [botTok, setBotTok] = useState<bigint[]>([0n, 0n]);
   const [log, setLog] = useState<Log[]>([]);
   const [bid, setBid] = useState('2');
   const [busy, setBusy] = useState(false);
@@ -64,13 +66,14 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
 
   const refresh = useCallback(async () => {
     setBotEth(await Promise.all(bots.map((b) => pc.getBalance({ address: b.address }))));
+    if (N.visitorFundsBots) setBotTok(await Promise.all(bots.map(async (b) => (await readWallet(chain, d.usdg, b.address)).balance)));
     if (account) setMe(await readWallet(chain, d.usdg, account, circleAddr ?? undefined));
     if (circleAddr) setC(await readCircle(chain, circleAddr));
   }, [account, bots, chain, circleAddr, d.usdg, pc]);
 
   useEffect(() => {
     void refresh();
-    const t = setInterval(() => void refresh(), 4000);
+    const t = setInterval(() => void refresh(), Math.min(4000, N.pollMs * 2));
     return () => clearInterval(t);
   }, [refresh]);
 
@@ -116,21 +119,21 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
           if (c.phase === 0 && !m && botEth[i] > 0n) {
             const bal = (await readWallet(chain, d.usdg, bots[i].address, c.address)).balance;
             if (bal < c.config.collateral + c.config.contribution * BigInt(c.config.size) &&
-              !(await bot(i, `${c.address}:${i}:faucet`, 'took 1,000 test USDG from the faucet', 'use the faucet', { address: d.usdg, abi: TestUSDGAbi, functionName: 'faucet' }))) return;
-            if (!(await bot(i, `${c.address}:${i}:approve`, 'approved the circle to take USDG', 'approve USDG', { address: d.usdg, abi: TestUSDGAbi, functionName: 'approve', args: [c.address, maxUint256] }))) return;
-            await bot(i, `${c.address}:${i}:join`, `joined and locked ${usd(c.config.collateral)} USDG collateral`, 'join', { address: c.address, abi: PotluckCircleAbi, functionName: 'join' });
+              !(await bot(i, `${c.address}:${i}:faucet`, `took test ${sym} from the faucet`, 'use the faucet', N.stableFaucet(d.usdg, bots[i].address)))) return;
+            if (!(await bot(i, `${c.address}:${i}:approve`, `approved the circle to take ${sym}`, `approve ${sym}`, { address: d.usdg, abi: TestUSDGAbi, functionName: 'approve', args: [c.address, maxUint256] }))) return;
+            await bot(i, `${c.address}:${i}:join`, `joined and locked ${usd(c.config.collateral)} ${sym} collateral`, 'join', { address: c.address, abi: PotluckCircleAbi, functionName: 'join' });
             return;
           }
           if (c.phase === 1 && m && !m.paidThisRound && !m.defaulted) {
-            await bot(i, `${c.address}:${c.currentRound}:${i}:pay`, `paid round ${c.currentRound}: ${usd(c.config.contribution)} USDG`, `pay round ${c.currentRound}`, { address: c.address, abi: PotluckCircleAbi, functionName: 'contribute' });
+            await bot(i, `${c.address}:${c.currentRound}:${i}:pay`, `paid round ${c.currentRound}: ${usd(c.config.contribution)} ${sym}`, `pay round ${c.currentRound}`, { address: c.address, abi: PotluckCircleAbi, functionName: 'contribute' });
             return;
           }
           if (c.phase === 1 && m && m.claimable > 0n) {
-            await bot(i, `${c.address}:${c.currentRound}:${i}:claim`, `claimed ${usd(m.claimable)} USDG`, 'claim', { address: c.address, abi: PotluckCircleAbi, functionName: 'claim' });
+            await bot(i, `${c.address}:${c.currentRound}:${i}:claim`, `claimed ${usd(m.claimable)} ${sym}`, 'claim', { address: c.address, abi: PotluckCircleAbi, functionName: 'claim' });
             return;
           }
           if (c.phase === 2 && m && m.collateralLeft + m.bond + m.claimable > 0n) {
-            await bot(i, `${c.address}:${i}:withdraw`, `withdrew ${usd(m.collateralLeft + m.bond + m.claimable)} USDG`, 'withdraw', { address: c.address, abi: PotluckCircleAbi, functionName: 'withdraw' });
+            await bot(i, `${c.address}:${i}:withdraw`, `withdrew ${usd(m.collateralLeft + m.bond + m.claimable)} ${sym}`, 'withdraw', { address: c.address, abi: PotluckCircleAbi, functionName: 'withdraw' });
             return;
           }
         }
@@ -142,7 +145,7 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
         });
         const eligible = c.members.filter((m) => !m.won && !m.defaulted).length;
         if (!c.topBidder && opener !== undefined && eligible > 1 && c.deadline - chainNow > 12) {
-          await bot(opener, `${c.address}:${c.currentRound}:bid`, `bid 1.00 USDG for round ${c.currentRound}'s pot`, 'bid', { address: c.address, abi: PotluckCircleAbi, functionName: 'bid', args: [1_000_000n] });
+          await bot(opener, `${c.address}:${c.currentRound}:bid`, `bid 1.00 ${sym} for round ${c.currentRound}'s pot`, 'bid', { address: c.address, abi: PotluckCircleAbi, functionName: 'bid', args: [1_000_000n] });
           return;
         }
         if (chainNow > c.deadline + 2) {
@@ -162,17 +165,28 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
     if (!wallet || !account) return connect();
     setBusy(true);
     try {
+      const from = wallet.account ?? account;
       for (let i = 0; i < 2; i++) {
-        if (botEth[i] >= BOT_GAS / 2n) continue;
-        const from = wallet.account ?? account;
+        if (botEth[i] >= (circleAddr ? BOT_GAS / 10n : BOT_GAS / 2n)) continue;
         const gas = ((await pc.estimateGas({ account: from, to: bots[i].address, value: BOT_GAS })) * 13n) / 10n;
         const hash = await wallet.sendTransaction({ account: from, chain, to: bots[i].address, value: BOT_GAS, gas } as never);
         const rc = await pc.waitForTransactionReceipt({ hash });
         if (rc.status !== 'success') throw new Error('transaction reverted');
         say('You', `sent gas to Bot ${BOT_NAMES[i]}`);
       }
+      for (let i = 0; N.visitorFundsBots && i < 2; i++) {
+        if (botTok[i] >= BOT_STAKE || circleAddr) continue;
+        const req = { address: d.usdg, abi: TestUSDGAbi, functionName: 'transfer', args: [bots[i].address, BOT_STAKE] };
+        const gas = await gasFor(chain, req, from);
+        const hash = await wallet.writeContract({ ...req, account: from, chain, gas } as never);
+        const rc = await pc.waitForTransactionReceipt({ hash });
+        if (rc.status !== 'success') throw new Error('transaction reverted');
+        say('You', `sent ${usd(BOT_STAKE, 0)} ${sym} to Bot ${BOT_NAMES[i]}`);
+      }
     } catch (e) {
-      say('You', `funding failed: ${(e as { shortMessage?: string }).shortMessage ?? (e as Error).message}`);
+      const err = e as { shortMessage?: string; details?: string; message?: string };
+      const why = /insufficient (balance|funds)/i.test(`${err.details} ${err.message}`) ? `not enough test ${N.gasSym} or ${sym} in your wallet` : err.shortMessage ?? err.message;
+      say('You', `funding failed: ${why}`);
     } finally {
       // Refresh first, so the button cannot be pressed again while the old balances are still shown.
       await refresh().catch(() => undefined);
@@ -194,7 +208,7 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
       } catch {
         /* ignore */
       }
-      say('You', 'created a 3-member auction circle: 10 USDG a round, 1-minute rounds');
+      say('You', `created a 3-member auction circle: 10 ${sym} a round, ${ROUND}-second rounds`);
       // Load it before unlocking the page, so the create button cannot be pressed twice.
       setC(await readCircle(chain, latest).catch(() => null));
     }
@@ -213,7 +227,12 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
   };
 
   const mine = c?.members.find((m) => account && m.address.toLowerCase() === account.toLowerCase());
-  const botsFunded = botEth.every((b) => b >= BOT_GAS / 2n);
+  // Before the circle exists the bots need their full allowance; afterwards they spend it, so only an almost empty
+  // gas balance brings the funding step back.
+  const botsFunded = circleAddr
+    ? botEth.every((b) => b >= BOT_GAS / 10n)
+    : botEth.every((b) => b >= BOT_GAS / 2n) && (!N.visitorFundsBots || botTok.every((t) => t >= BOT_STAKE));
+  const visitorShort = N.visitorFundsBots && !!me && me.balance < BOT_STAKE * 3n;
   const needUsdg = !!me && me.balance < CONTRIBUTION * 5n;
   const needApproval = !!me && !!circleAddr && me.allowance < CONTRIBUTION * 4n;
   const left = c ? c.deadline - (now + c.clockSkew) : 0;
@@ -223,7 +242,7 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
   return (
     <main className="page practice">
       <p className="eyebrow">Try it alone · live on {chain.name}</p>
-      <h1>A whole circle in three minutes.</h1>
+      <h1>{ROUND <= 40 ? 'A whole circle in two minutes.' : 'A whole circle in three minutes.'}</h1>
       <p className="lede">
         You and two bot members who live in this browser tab. They join, pay every round, open the bidding and settle rounds on their own.
         You pay, try to outbid them for the pot, claim what you win, and take your collateral back at the end. Every step is a real transaction on {chain.name}.
@@ -231,26 +250,29 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
 
       <ol className="steps-list">
         <li className={step > 0 ? 'done' : step === 0 ? 'now' : ''}>
-          <b>Connect a wallet</b> with a little test ETH for gas.{' '}
-          {FAUCETS[chain.id] && <a href={FAUCETS[chain.id]} target="_blank" rel="noreferrer">Get test ETH</a>}
+          <b>Connect a wallet</b> with a little test {N.gasSym} for gas.{' '}
+          {N.gasFaucet && <a href={N.gasFaucet} target="_blank" rel="noreferrer">Get test {N.gasSym}</a>}
           {!account && <button className="btn" onClick={connect}>Connect wallet</button>}
-          {account && me && me.eth === 0n && <span className="bad"> Your wallet has no test ETH on this network yet.</span>}
+          {account && me && me.eth === 0n && <span className="bad"> Your wallet has no test {N.gasSym} on this network yet.</span>}
         </li>
         <li className={step > 1 ? 'done' : step === 1 ? 'now' : ''}>
-          <b>Give the bots gas.</b> Two tiny transfers of {Number(BOT_GAS) / 1e18} test ETH to {BOT_NAMES.join(' and ')}.
+          {N.visitorFundsBots
+            ? <><b>Fund the bots.</b> Send {BOT_NAMES.join(' and ')} {Number(BOT_GAS) / 1e18} test {N.gasSym} for gas and {usd(BOT_STAKE, 0)} test {sym} each.</>
+            : <><b>Give the bots gas.</b> Two small transfers of {Number(BOT_GAS) / 1e18} test {N.gasSym} to {BOT_NAMES.join(' and ')}.</>}
           <span className="muted small"> ({bots.map((b) => short(b.address)).join(', ')})</span>
-          {step === 1 && <button className="btn" disabled={busy} onClick={fundBots}>Send gas to the bots</button>}
+          {step === 1 && visitorShort && <button className="btn ghost" onClick={() => send(N.stableFaucetLabel, N.stableFaucet(d.usdg, account!))}>{N.stableFaucetLabel}</button>}
+          {step === 1 && <button className="btn" disabled={busy || visitorShort} onClick={fundBots}>{N.visitorFundsBots ? 'Fund the bots' : 'Send gas to the bots'}</button>}
         </li>
         <li className={step > 2 ? 'done' : step === 2 ? 'now' : ''}>
-          <b>Create the practice circle</b>: 3 members, 10 USDG a round, auction mode, 1-minute rounds.
+          <b>Create the practice circle</b>: 3 members, 10 {sym} a round, auction mode, {ROUND}-second rounds.
           {step === 2 && !circleAddr && <button className="btn" disabled={busy} onClick={createCircle}>Create practice circle</button>}
           {step === 2 && circleAddr && <span className="muted small"> Loading the circle…</span>}
         </li>
         <li className={step > 3 ? 'done' : step === 3 ? 'now' : ''}>
-          <b>Join</b> by locking 10 USDG collateral. The bots join on their own.
-          {step >= 3 && needUsdg && <button className="btn ghost" onClick={() => send('Get 1,000 test USDG', { address: d.usdg, abi: TestUSDGAbi, functionName: 'faucet' })}>Get test USDG</button>}
+          <b>Join</b> by locking 10 {sym} collateral. The bots join on their own.
+          {step >= 3 && needUsdg && <button className="btn ghost" onClick={() => send(N.stableFaucetLabel, N.stableFaucet(d.usdg, account!))}>Get test {sym}</button>}
           {step === 3 && !mine && (needApproval
-            ? <button className="btn" onClick={() => send('Approve USDG', { address: d.usdg, abi: TestUSDGAbi, functionName: 'approve', args: [circleAddr, maxUint256] })}>Approve USDG</button>
+            ? <button className="btn" onClick={() => send(`Approve ${sym}`, { address: d.usdg, abi: TestUSDGAbi, functionName: 'approve', args: [circleAddr, maxUint256] })}>Approve {sym}</button>
             : <button className="btn" onClick={() => call('Join circle', 'join')}>Join</button>)}
         </li>
         <li className={step > 4 ? 'done' : step === 4 ? 'now' : ''}>
@@ -263,11 +285,11 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
                 <span>pot {usd(c.collected, 0)} / {usd(c.config.contribution * 3n, 0)}</span>
               </div>
               {!mine.paidThisRound && !mine.defaulted && (needApproval
-                ? <button className="btn" onClick={() => send('Approve USDG', { address: d.usdg, abi: TestUSDGAbi, functionName: 'approve', args: [circleAddr, maxUint256] })}>Approve USDG</button>
-                : <button className="btn" onClick={() => call(`Pay round ${c.currentRound}`, 'contribute')}>Pay 10 USDG</button>)}
+                ? <button className="btn" onClick={() => send(`Approve ${sym}`, { address: d.usdg, abi: TestUSDGAbi, functionName: 'approve', args: [circleAddr, maxUint256] })}>Approve {sym}</button>
+                : <button className="btn" onClick={() => call(`Pay round ${c.currentRound}`, 'contribute')}>Pay 10 {sym}</button>)}
               {mine.paidThisRound && <span className="ok">✓ paid</span>}
               {mine.claimable > 0n && (
-                <button className="btn" onClick={() => call('Claim payout', 'claim')}>Claim {usd(mine.claimable)} USDG</button>
+                <button className="btn" onClick={() => call('Claim payout', 'claim')}>Claim {usd(mine.claimable)} {sym}</button>
               )}
               {mine.won ? (
                 <p className="small">You took the pot in round {mine.wonRound}. Keep paying: your bond is released at the end.</p>
@@ -275,7 +297,7 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
                 mine.paidThisRound && left > 3 && (
                   <div className="row">
                     <input value={bid} onChange={(e) => setBid(e.target.value)} inputMode="decimal" />
-                    <button className="btn" onClick={() => call('Place bid', 'bid', [BigInt(Math.round(Number(bid) * 1e6))])}>Bid USDG</button>
+                    <button className="btn" onClick={() => call('Place bid', 'bid', [BigInt(Math.round(Number(bid) * 1e6))])}>Bid {sym}</button>
                     <span className="small muted">best: {c.topBidder ? `${usd(c.topDiscount)} by ${c.topBidder.toLowerCase() === account?.toLowerCase() ? 'you' : 'a bot'}` : 'none yet'} · max {usd(c.maxDiscount)}</span>
                   </div>
                 )
@@ -286,7 +308,7 @@ export function Practice({ chain, account, wallet, send, connect }: { chain: Cha
         <li className={step === 5 ? 'now' : ''}>
           <b>Take your collateral and bond back</b>, then see the record written to your savings score.
           {step === 5 && mine && mine.collateralLeft + mine.bond + mine.claimable > 0n && (
-            <button className="btn" onClick={() => call('Withdraw', 'withdraw')}>Withdraw {usd(mine.collateralLeft + mine.bond + mine.claimable)} USDG</button>
+            <button className="btn" onClick={() => call('Withdraw', 'withdraw')}>Withdraw {usd(mine.collateralLeft + mine.bond + mine.claimable)} {sym}</button>
           )}
           {step === 5 && account && <a className="btn ghost" href={`#/score/${account}`}>See your savings score</a>}
         </li>

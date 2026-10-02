@@ -170,3 +170,19 @@ footer { max-width: 1160px; margin: 0 auto; padding: 20px 32px 40px; font-size: 
 .log .muted { color: #9d9486; }
 .hero .btn.big { display: inline-block; margin-top: 8px; text-decoration: none; }
 button:disabled { opacity: 0.5; cursor: default; }
+
+/* live feed and send-on panel */
+.live { margin-top: 36px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; }
+.live h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; flex-wrap: wrap; }
+.live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); animation: live-pulse 1.6s infinite; }
+@keyframes live-pulse { 0% { box-shadow: 0 0 0 0 rgba(210, 86, 59, 0.45); } 70% { box-shadow: 0 0 0 9px rgba(210, 86, 59, 0); } 100% { box-shadow: 0 0 0 0 rgba(210, 86, 59, 0); } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+.live ul { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow: auto; }
+.live li { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 14.5px; }
+.live li:first-child { border-top: 0; }
+.live li.fresh { animation: live-in 0.6s ease-out; }
+@keyframes live-in { from { background: rgba(210, 86, 59, 0.12); } to { background: transparent; } }
+.live .when { font-family: var(--mono); font-size: 12.5px; color: var(--muted); padding-top: 2px; }
+.send-home { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.send-home .row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto; gap: 8px; }
+@media (max-width: 560px) { .send-home .row { grid-template-columns: minmax(0, 1fr); } }
