@@ -8,8 +8,8 @@ It runs on trust, and it fails the same way everywhere: someone takes the pot ea
 
 **Potluck puts the circle in a contract**, denominated in a dollar stablecoin, with no operator in the middle. It runs on **Monad** with Agora's **AUSD** and on **Robinhood Chain** (Arbitrum Orbit) with Paxos **USDG**:
 
-- **Collateral instead of trust.** Every member locks a small collateral when joining. A missed payment is covered from it automatically, so the pot is always whole.
-- **A winner's bond.** Whoever takes the pot early has part of it held back (capped at what they still owe) and gets it back at the end. A winner who walks away is covered by their own bond first.
+- **Collateral instead of trust.** Every member locks a small collateral when joining. A missed payment is covered from it automatically, up to the collateral available.
+- **A winner's bond.** Whoever takes the pot early has part of it held back (capped at what they still owe) and gets it back at the end. A winner who walks away is covered by their collateral first, then their bond.
 - **Auction mode, the way *hui* and chit funds actually work.** Members who need money now bid a discount to take this round's pot; the discount is paid to everyone else. People who can wait earn interest, people who can't pay a fair, market-set price.
 - **A portable savings record.** When a circle ends, each member's on-time payments, missed payments and defaults are written to `PotluckReputation`, an open on-chain registry any lender, merchant or new circle can read.
 - **No admin keys, pull payments.** There is no owner and no function that moves funds outside the rules. Settlement only credits balances and each member claims their own money, so one frozen or broken address can never lock the circle. Circles are minimal-proxy clones of one implementation.
@@ -32,7 +32,7 @@ Every step is a real transaction on Monad Testnet.
 
 Every step is a real transaction on Robinhood Chain Testnet. The finished circles on the home page were run the same way.
 
-## How a circle runs
+## How it works
 
 ```
 Forming ──(all seats filled)──► Active: round 1 … round N ──► Completed ──► withdraw collateral + bond
@@ -48,6 +48,12 @@ Forming ──(all seats filled)──► Active: round 1 … round N ──► 
 ```
 
 A member whose collateral and bond can no longer cover a round is marked **defaulted**: they can't win, are excluded from dividends, and the default is recorded on-chain.
+
+Collateral and bond reduce but do not remove the risk that a winner stops paying, and the last recipients bear any shortfall.
+
+## Supported tokens
+
+Only plain ERC-20s without transfer fees or rebasing are supported. `join()` and `contribute()` check that the circle's balance increases by exactly the nominal amount and revert with `BadConfig()` otherwise. This incoming check does not make tokens with outgoing fees, later rebases, or dishonest balance reporting compatible.
 
 ## Contracts
 
@@ -66,7 +72,7 @@ Any 6-decimal ERC-20 works as the circle's token; on Arbitrum One the frontend d
 forge test
 ```
 
-15 unit and fuzz tests plus 3 invariant tests. The fuzz test (512 runs) plays random circles — random sizes, bond ratios, bids and ~20% missed payments — to completion and asserts that **no token is created or stranded**. The invariant suite fires 15,000+ random calls (join, pay, bid, settle, claim, withdraw, time jumps) and checks after every call that the circle holds exactly what it owes. One test freezes a member's address in a USDG-like token and shows the rest of the circle still settles and pays out. Details and the Slither review: [SECURITY.md](SECURITY.md).
+45 tests, including 3 invariant tests and a regression suite for the 2026-10-02 review. The fuzz test (512 runs) plays random circles with random sizes, bond ratios, bids and ~20% missed payments to completion, and asserts that **no token is created or stranded**. The invariant suite fires 15,000+ random calls (join, pay, bid, settle, claim, withdraw, time jumps) and checks after every call that the circle holds exactly what it owes. One test freezes a member's address in a USDG-like token and shows the rest of the circle still settles and pays out. Details, the review findings and the Slither results: [SECURITY.md](SECURITY.md).
 
 Covered: frozen-member isolation, full fixed-order cycle with net-zero outcome, bond cap at remaining obligation, early settlement rules, collateral coverage, default and skip, bond-first coverage for winners who stop paying, auction ordering, discount sharing with rounding dust, bid rules, cancel/refund, config validation, registry access control, and the implementation's disabled initializer.
 
@@ -81,17 +87,17 @@ Monad makes a savings circle feel like a group chat: a payment, a bid or a payou
 
 | Contract (Monad Testnet, chain id 10143) | Address |
 |---|---|
-| PotluckFactory | [`0x7058BA553282753638F38800999828F89A7eAb94`](https://testnet.monadvision.com/address/0x7058BA553282753638F38800999828F89A7eAb94) |
-| PotluckCircle (implementation) | [`0x4Ddf7086F29e3340b6befaD99f0f32cae6Af077D`](https://testnet.monadvision.com/address/0x4Ddf7086F29e3340b6befaD99f0f32cae6Af077D) |
-| PotluckReputation | [`0x82e6aF09B6d5621D555679fa92Ea3a0b9eBC73F0`](https://testnet.monadvision.com/address/0x82e6aF09B6d5621D555679fa92Ea3a0b9eBC73F0) |
+| PotluckFactory | [`0xE688A98Ee9d9780E7Bd80FAD3a18630F2edEBDcF`](https://testnet.monadvision.com/address/0xE688A98Ee9d9780E7Bd80FAD3a18630F2edEBDcF) |
+| PotluckCircle (implementation) | [`0xa4A4d2938c652010ef054f3670c0Be13Ef071B7d`](https://testnet.monadvision.com/address/0xa4A4d2938c652010ef054f3670c0Be13Ef071B7d) |
+| PotluckReputation | [`0x8eb42A9D5881A3f0C8c8104030524a9bd833b9FD`](https://testnet.monadvision.com/address/0x8eb42A9D5881A3f0C8c8104030524a9bd833b9FD) |
 | AUSD (Agora testnet token) | [`0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC`](https://testnet.monadvision.com/address/0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC) |
 
-Contracts are verified (Sourcify, shown on MonadVision). Circles run on this deployment:
+Contracts are verified (Sourcify exact match, shown on MonadVision). This deployment runs the reviewed contracts (see [SECURITY.md](SECURITY.md#review-2026-10-02)); the first Monad deployment is archived in `deployments/archive/`. Circles run on it:
 
-- **Studio rent pool**, fixed order, 3 members, completed and recorded in the savings score: [`0x585F23E9875C56B98df519b86EF6Aa3FA1C4025d`](https://luoy16002-svg.github.io/potluck/?chain=10143#/c/0x585F23E9875C56B98df519b86EF6Aa3FA1C4025d)
-- **Friday lunch circle**, auction, 5 members, 100 AUSD a round, two-week rounds: [`0xe65330A87332e5129CCFe8e04F4F5346c10F0CA2`](https://luoy16002-svg.github.io/potluck/?chain=10143#/c/0xe65330A87332e5129CCFe8e04F4F5346c10F0CA2)
+- **Studio rent pool**, fixed order, 3 members, completed and recorded in the savings score: [`0xeDE9bE5A1f436bEd5c83D98d3c744630BFEd522d`](https://luoy16002-svg.github.io/potluck/?chain=10143#/c/0xeDE9bE5A1f436bEd5c83D98d3c744630BFEd522d)
+- **Friday lunch circle**, auction, 5 members, 100 AUSD a round, two-week rounds: [`0x87cdCE7B0526FD2d4c9B773b6f24D7C84D0e6ADd`](https://luoy16002-svg.github.io/potluck/?chain=10143#/c/0x87cdCE7B0526FD2d4c9B773b6f24D7C84D0e6ADd)
 
-The same Solidity, tests and invariants as the Robinhood Chain deployment: `USDG=0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC forge script script/Deploy.s.sol --rpc-url https://testnet-rpc.monad.xyz --broadcast`.
+Deploy: `USDG=0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC forge script script/Deploy.s.sol --rpc-url https://testnet-rpc.monad.xyz --broadcast`. The Robinhood Chain deployment below predates the review.
 
 ## Deployments on Robinhood Chain
 

@@ -39,19 +39,30 @@ contract PotluckReputation {
     }
 
     /// @notice Called once per member by a circle created through the factory when it completes.
+    /// Cumulative counters saturate at their type's maximum so history growth cannot block recording.
     function record(address member, uint32 onTime, uint32 missed, bool defaulted, uint128 contributed) external {
         if (!isCircle[msg.sender]) revert OnlyCircle();
         if (recorded[msg.sender][member]) revert AlreadyRecorded();
         recorded[msg.sender][member] = true;
 
         Stats storage s = _stats[member];
-        if (defaulted) s.circlesDefaulted += 1;
-        else s.circlesCompleted += 1;
-        s.onTimePayments += onTime;
-        s.missedPayments += missed;
-        s.totalContributed += contributed;
+        if (defaulted) s.circlesDefaulted = _saturatingAdd32(s.circlesDefaulted, 1);
+        else s.circlesCompleted = _saturatingAdd32(s.circlesCompleted, 1);
+        s.onTimePayments = _saturatingAdd32(s.onTimePayments, onTime);
+        s.missedPayments = _saturatingAdd32(s.missedPayments, missed);
+        s.totalContributed = _saturatingAdd128(s.totalContributed, contributed);
         s.lastUpdated = uint64(block.timestamp);
         emit Recorded(member, msg.sender, onTime, missed, defaulted);
+    }
+
+    function _saturatingAdd32(uint32 a, uint32 b) internal pure returns (uint32) {
+        uint256 sum = uint256(a) + b;
+        return sum > type(uint32).max ? type(uint32).max : uint32(sum);
+    }
+
+    function _saturatingAdd128(uint128 a, uint128 b) internal pure returns (uint128) {
+        uint256 sum = uint256(a) + b;
+        return sum > type(uint128).max ? type(uint128).max : uint128(sum);
     }
 
     function stats(address member) external view returns (Stats memory) {

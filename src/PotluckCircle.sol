@@ -23,15 +23,19 @@ interface IPotluckReputation {
 /// Default protection, without any trusted operator:
 /// - Every member locks `collateral` when joining. A missed contribution is covered from it.
 /// - A winner has `bondBps` of the payout held back (capped at what they still owe) and gets it back at the
-///   end. A winner who stops paying is covered from this bond first.
+///   end. A winner who stops paying is covered from collateral first, then this bond.
 /// - A member whose collateral and bond cannot cover a missed round is marked defaulted and can no longer win.
 ///
 /// Payouts are pulled, not pushed: settling a round only credits winners and dividend receivers, and each member
 /// takes their money with `claim` (any time) or `withdraw` (at the end). A member whose address is frozen by the
 /// token issuer, or who cannot receive tokens for any other reason, can never block the circle for everyone else.
 ///
+/// Only plain ERC-20s without transfer fees or rebasing are supported. Incoming transfers must deliver
+/// exactly the nominal amount; outgoing fees and later balance changes are not supported.
+///
 /// There is no owner and no admin function: funds only move by the rules below. On completion every
-/// member's record (on-time payments, missed payments, default) is written to PotluckReputation.
+/// member's record (on-time payments, missed payments, default) is submitted to PotluckReputation on a
+/// best-effort basis. A failed reputation update does not block completion or withdrawals.
 contract PotluckCircle is Initializable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -105,6 +109,10 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
     mapping(uint256 => address) public topBidder;
     mapping(uint256 => uint128) public topDiscount;
     mapping(uint256 => RoundResult) internal _results;
+    mapping(uint256 => uint256) internal _roundDeadlines;
+
+    /// Gas handed to each reputation record. A first record costs about 85k on Monad and 75k on Ethereum.
+    uint256 internal constant RECORD_GAS = 250_000;
 
     event Joined(address indexed member, uint256 memberCount);
     event Started(uint64 startedAt);
@@ -149,6 +157,10 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
                 || c.maxDiscountBps > MAX_DISCOUNT_BPS || (c.mode == Mode.Fixed && c.maxDiscountBps != 0)
         ) revert BadConfig();
         if (creator_ == address(0)) revert BadConfig();
+        // Bound all lifetime pot credits plus a member's collateral, including an unclaimed bond.
+        if (uint256(c.collateral) + uint256(c.size) * c.size * c.contribution > type(uint128).max) {
+            revert BadConfig();
+        }
         creator = creator_;
         name = name_;
         _config = c;
@@ -171,12 +183,13 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
         emit Joined(msg.sender, _members.length);
 
         if (_config.collateral > 0) {
-            _config.token.safeTransferFrom(msg.sender, address(this), _config.collateral);
+            _receiveExact(_config.collateral);
         }
         if (_members.length == _config.size) {
             phase = Phase.Active;
             startedAt = uint64(block.timestamp);
             currentRound = 1;
+            _roundDeadlines[1] = uint256(startedAt) + _config.roundDuration;
             emit Started(startedAt);
         }
     }
@@ -211,11 +224,12 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
         if (onTime) m.onTime += 1;
         emit Contributed(msg.sender, r, amount, onTime);
 
-        _config.token.safeTransferFrom(msg.sender, address(this), amount);
+        _receiveExact(amount);
     }
 
     /// @notice Auction mode: offer a discount for taking this round's pot. Only members who have paid this
-    /// round and have not won yet can bid. A new bid must beat the current best discount.
+    /// round and have not won yet can bid. A new bid must beat the current best discount and cannot
+    /// exceed either the configured discount cap or the amount already collected this round.
     function bid(uint128 discount) external {
         if (_config.mode != Mode.Auction) revert NotEligible();
         if (phase != Phase.Active) revert WrongPhase();
@@ -224,7 +238,7 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
         Member storage m = _member[msg.sender];
         if (!m.joined || m.won || m.defaulted) revert NotEligible();
         if (!paid[r][msg.sender]) revert MustContributeFirst();
-        if (discount > maxDiscount()) revert DiscountTooHigh();
+        if (discount > maxDiscount() || discount > collected[r]) revert DiscountTooHigh();
         if (topBidder[r] != address(0) && discount <= topDiscount[r]) revert BidTooLow();
 
         topBidder[r] = msg.sender;
@@ -257,9 +271,9 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
             _results[r] = RoundResult(address(0), pot, 0, 0, 0, uint64(block.timestamp));
             emit RoundSettled(r, address(0), pot, 0, 0, 0);
         } else {
-            if (discount > pot) discount = 0;
+            if (discount > pot) discount = pot;
             uint128 gross = pot - discount;
-            uint128 stillOwed = uint128(_config.size - r) * _config.contribution;
+            uint128 stillOwed = uint128((_config.size - r) * uint256(_config.contribution));
             uint128 bondAmt = uint128((uint256(gross) * _config.bondBps) / 10_000);
             if (bondAmt > stillOwed) bondAmt = stillOwed;
 
@@ -281,6 +295,9 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
             _recordReputation();
         } else {
             currentRound = uint8(r + 1);
+            uint256 scheduled = uint256(startedAt) + (r + 1) * _config.roundDuration;
+            uint256 fullWindow = block.timestamp + _config.roundDuration;
+            _roundDeadlines[r + 1] = scheduled > fullWindow ? scheduled : fullWindow;
         }
     }
 
@@ -300,7 +317,8 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
         if (phase != Phase.Completed && phase != Phase.Cancelled) revert WrongPhase();
         Member storage m = _member[msg.sender];
         if (!m.joined) revert NotMember();
-        uint128 amount = m.collateralLeft + m.bond + m.claimable;
+        // initialize() bounds this sum before narrowing it to the unchanged event amount type.
+        uint128 amount = uint128(uint256(m.collateralLeft) + m.bond + m.claimable);
         if (amount == 0) revert NothingToWithdraw();
         m.withdrawn = true;
         m.collateralLeft = 0;
@@ -311,6 +329,14 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
     }
 
     // ---------------------------------------------------------------------------------------- internals
+
+    function _receiveExact(uint128 amount) internal {
+        uint256 beforeBalance = _config.token.balanceOf(address(this));
+        _config.token.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 afterBalance = _config.token.balanceOf(address(this));
+        // Inexact transfers mean the configured token is unsupported; revert all associated credits.
+        if (afterBalance < beforeBalance || afterBalance - beforeBalance != amount) revert BadConfig();
+    }
 
     function _allActivePaid(uint256 r) internal view returns (bool) {
         for (uint256 i; i < _members.length; ++i) {
@@ -385,11 +411,17 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
     }
 
     function _recordReputation() internal {
-        if (address(reputation) == address(0)) return;
+        if (address(reputation).code.length == 0) return;
         for (uint256 i; i < _members.length; ++i) {
             address a = _members[i];
             Member storage m = _member[a];
-            reputation.record(a, m.onTime, m.missed, m.defaulted, m.contributed);
+            // Each record gets its full budget or the settlement reverts (and can be retried with more gas), so a
+            // low gas limit can never turn into a caught failure that silently drops a record, a default included.
+            // Only a failure inside the registry itself is skipped.
+            if (gasleft() < RECORD_GAS + RECORD_GAS / 63 + 20_000) revert();
+            // Bound external work and isolate each record so a registry failure cannot lock funds
+            // or prevent other members' records.
+            try reputation.record{gas: RECORD_GAS}(a, m.onTime, m.missed, m.defaulted, m.contributed) {} catch {}
         }
     }
 
@@ -416,14 +448,16 @@ contract PotluckCircle is Initializable, ReentrancyGuard {
     }
 
     function potSize() public view returns (uint128) {
-        return _config.contribution * _config.size;
+        return uint128(uint256(_config.contribution) * _config.size);
     }
 
     function maxDiscount() public view returns (uint128) {
         return uint128((uint256(potSize()) * _config.maxDiscountBps) / 10_000);
     }
 
+    /// @notice Effective deadline for an opened round; unopened rounds show their original schedule.
     function roundDeadline(uint256 r) public view returns (uint256) {
+        if (_roundDeadlines[r] != 0) return _roundDeadlines[r];
         return uint256(startedAt) + r * _config.roundDuration;
     }
 
