@@ -166,7 +166,7 @@ contract PotluckTest is Test {
         assertEq(rep.score(people[1]) < 500, true);
     }
 
-    function test_winnerWhoStopsPayingIsCoveredByBondFirst() public {
+    function test_winnerWhoStopsPayingIsCoveredByCollateralFirst() public {
         PotluckCircle circle = _create(_cfg(3, PotluckCircle.Mode.Fixed, 3000, 0));
         _joinAll(circle, 3);
         _payAll(circle, 3);
@@ -305,7 +305,9 @@ contract PotluckTest is Test {
     /// everyone else claims and withdraws, and the frozen member's money stays credited to them.
     function test_frozenMemberCannotBlockTheCircle() public {
         FreezableUSDG f = new FreezableUSDG();
-        for (uint256 i; i < 3; ++i) f.mint(people[i], 10_000e6);
+        for (uint256 i; i < 3; ++i) {
+            f.mint(people[i], 10_000e6);
+        }
         PotluckCircle.Config memory c = _cfg(3, PotluckCircle.Mode.Auction, 2000, 1000);
         c.token = f;
         vm.prank(people[0]);
@@ -337,7 +339,11 @@ contract PotluckTest is Test {
         circle.withdraw(); // the token refuses, only for the frozen member
         PotluckCircle.Member memory m1 = circle.memberInfo(people[1]);
         assertEq(usdg.balanceOf(address(circle)), 0);
-        assertEq(f.balanceOf(address(circle)), m1.collateralLeft + m1.bond + m1.claimable, "only the frozen member's own funds remain");
+        assertEq(
+            f.balanceOf(address(circle)),
+            m1.collateralLeft + m1.bond + m1.claimable,
+            "only the frozen member's own funds remain"
+        );
     }
 
     // ------------------------------------------------------------------------------------ conservation
@@ -349,7 +355,9 @@ contract PotluckTest is Test {
         PotluckCircle circle = _create(_cfg(size, PotluckCircle.Mode.Auction, bondBps, 3000));
         _joinAll(circle, size);
         uint256 total;
-        for (uint256 i; i < size; ++i) total += usdg.balanceOf(people[i]);
+        for (uint256 i; i < size; ++i) {
+            total += usdg.balanceOf(people[i]);
+        }
         total += usdg.balanceOf(address(circle));
 
         for (uint256 r = 1; r <= size; ++r) {
@@ -363,7 +371,9 @@ contract PotluckTest is Test {
             uint256 bidder = uint256(keccak256(abi.encode(seed, r))) % size;
             PotluckCircle.Member memory b = circle.memberInfo(people[bidder]);
             if (!b.won && !b.defaulted && circle.paid(r, people[bidder])) {
-                uint128 d = uint128(uint256(keccak256(abi.encode(seed, "d", r))) % (circle.maxDiscount() + 1));
+                uint256 cap = circle.maxDiscount();
+                if (cap > circle.collected(r)) cap = circle.collected(r);
+                uint128 d = uint128(uint256(keccak256(abi.encode(seed, "d", r))) % (cap + 1));
                 vm.prank(people[bidder]);
                 circle.bid(d);
             }
@@ -378,7 +388,9 @@ contract PotluckTest is Test {
             }
         }
         uint256 after_;
-        for (uint256 i; i < size; ++i) after_ += usdg.balanceOf(people[i]);
+        for (uint256 i; i < size; ++i) {
+            after_ += usdg.balanceOf(people[i]);
+        }
         assertEq(usdg.balanceOf(address(circle)), 0, "nothing stranded");
         assertEq(after_, total, "conserved");
     }
