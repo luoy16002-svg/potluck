@@ -506,7 +506,6 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
           {mine && mine.claimable > 0n && (
             <button className="btn" onClick={() => call('Claim payout', 'claim')}>Claim {usd(mine.claimable)} {sym}</button>
           )}
-          {mine && me && me.balance > 0n && c.phase >= 1 && <SendHome token={token} sym={sym} balance={me.balance} send={send} />}
           {c.phase === 1 && mine && !mine.defaulted && !mine.paidThisRound && (
             needsApproval(cfg.contribution) ? (
               <button className="btn" onClick={approve}>Approve {sym}</button>
@@ -540,6 +539,7 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
           {c.phase === 0 && account?.toLowerCase() === c.creator.toLowerCase() && (
             <button className="btn ghost" onClick={() => call('Cancel circle', 'cancel')}>Cancel before it starts</button>
           )}
+          {mine && me && me.balance > 0n && c.phase >= 1 && <SendHome token={token} sym={sym} balance={me.balance} send={send} />}
         </div>
       </section>
 
@@ -604,14 +604,14 @@ function SendHome({ token, sym, balance, send }: { token: Address; sym: string; 
   });
   const [amt, setAmt] = useState('');
   const amount = toUnits(amt.replace(/,/g, '') || '0');
-  const ok = isAddress(to) && amount > 0n && amount <= balance;
+  const ok = isAddress(to, { strict: false }) && amount > 0n && amount <= balance;
   async function go() {
     try {
       localStorage.setItem('potluck.sendTo', to);
     } catch {
       /* ignore */
     }
-    if (await send(`Send ${amt} ${sym}`, { address: token, abi: TestUSDGAbi, functionName: 'transfer', args: [to, amount] })) setAmt('');
+    if (await send(`Send ${amt} ${sym}`, { address: token, abi: TestUSDGAbi, functionName: 'transfer', args: [to.toLowerCase(), amount] })) setAmt('');
   }
   return (
     <div className="send-home">
@@ -631,7 +631,7 @@ function ago(seen: number, now: number): string {
   return s < 2 ? 'just now' : s < 60 ? `${s}s ago` : `${Math.floor(s / 60)}m ago`;
 }
 
-function LiveFeed({ chain, live, c, account, sym }: { chain: Chain; live: { events: LiveEvent[]; head: bigint | null }; c: Circle; account: Address | null; sym: string }) {
+function LiveFeed({ chain, live, c, account, sym }: { chain: Chain; live: { events: LiveEvent[]; head: bigint | null; streaming: boolean }; c: Circle; account: Address | null; sym: string }) {
   const now = useNow() * 1000;
   const who = (a: unknown) => (typeof a === 'string' && account && a.toLowerCase() === account.toLowerCase() ? 'You' : short(String(a)));
   const amt = (v: unknown) => `${usd(BigInt(v as bigint))} ${sym}`;
@@ -656,7 +656,10 @@ function LiveFeed({ chain, live, c, account, sym }: { chain: Chain; live: { even
     <section className="live">
       <h3>
         <span className="live-dot" aria-hidden /> Live
-        <span className="muted small"> {live.head !== null ? `block ${live.head.toLocaleString()}` : 'connecting…'} · updates every {net(chain.id).pollMs / 1000}s</span>
+        <span className="muted small">
+          {' '}{live.head !== null ? `block ${live.head.toLocaleString()}` : 'connecting…'}
+          {live.streaming ? ' · streaming as blocks are proposed' : ` · updates every ${net(chain.id).pollMs / 1000}s`}
+        </span>
       </h3>
       {live.events.length === 0 ? (
         <p className="muted small">Nothing in the last few blocks. Payments, bids and payouts appear here as they land.</p>
@@ -666,7 +669,10 @@ function LiveFeed({ chain, live, c, account, sym }: { chain: Chain; live: { even
             <li key={e.key} className={e.seen ? 'fresh' : ''}>
               <span className="when">{ago(e.seen, now)}</span>
               <span>{line(e)}</span>
-              <a href={explorerTx(chain, e.tx) ?? '#'} target="_blank" rel="noreferrer" className="muted small">tx</a>
+              <span className="tail">
+                {e.state && <span className={`state ${e.state === 'Finalized' || e.state === 'Verified' ? 'final' : 'pending'}`}>{e.state === 'Verified' ? 'finalized' : e.state.toLowerCase()}</span>}
+                <a href={explorerTx(chain, e.tx) ?? '#'} target="_blank" rel="noreferrer" className="muted small">tx</a>
+              </span>
             </li>
           ))}
         </ul>
