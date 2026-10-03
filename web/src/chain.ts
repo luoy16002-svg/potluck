@@ -10,7 +10,7 @@ import {
   type PublicClient,
   type WalletClient,
 } from 'viem';
-import { arbitrumSepolia } from 'viem/chains';
+import { arbitrumSepolia, arc, arcTestnet } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 
 export const robinhoodTestnet = defineChain({
@@ -53,13 +53,15 @@ for (const [path, d] of Object.entries(files)) {
   deployments[id] = d;
 }
 
-const allChains: Chain[] = [arbitrumSepolia, robinhoodTestnet, monadTestnet, localChain];
+// Arc goes last so the default network for older links stays the same.
+const allChains: Chain[] = [arbitrumSepolia, robinhoodTestnet, monadTestnet, arc, arcTestnet, localChain];
 export const chains = allChains.filter(
   (c) => deployments[c.id] && (c.id !== localChain.id || location.hostname === 'localhost' || location.hostname === '127.0.0.1'),
 );
 
+/** A network with a deployment; links to one without (Arc mainnet before its deploy) fall back to the default. */
 export function chainById(id: number): Chain {
-  return allChains.find((c) => c.id === id) ?? chains[0];
+  return chains.find((c) => c.id === id) ?? chains[0];
 }
 
 const publicClients = new Map<number, PublicClient>();
