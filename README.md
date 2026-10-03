@@ -6,7 +6,7 @@ Over a billion people save in **rotating savings circles**: *hui* (会) in China
 
 It runs on trust, and it fails the same way everywhere: someone takes the pot early and stops paying.
 
-**Potluck puts the circle in a contract**, denominated in a dollar stablecoin, with no operator in the middle. It runs on **Monad** with Agora's **AUSD** and on **Robinhood Chain** (Arbitrum Orbit) with Paxos **USDG**:
+**Potluck puts the circle in a contract**, denominated in a dollar stablecoin, with no operator in the middle. It runs on **Monad** with Agora's **AUSD**, on **Robinhood Chain** (Arbitrum Orbit) with Paxos **USDG**, and on **Arc** with **USDC**:
 
 - **Collateral instead of trust.** Every member locks a small collateral when joining. A missed payment is covered from it automatically, up to the collateral available.
 - **A winner's bond.** Whoever takes the pot early has part of it held back (capped at what they still owe) and gets it back at the end. A winner who walks away is covered by their collateral first, then their bond.
@@ -31,6 +31,12 @@ Every step is a real transaction on Monad Testnet.
 4. Your savings score updates on chain. Look it up under **Savings score**.
 
 Every step is a real transaction on Robinhood Chain Testnet. The finished circles on the home page were run the same way.
+
+## Try it on Arc
+
+1. Open **https://luoy16002-svg.github.io/potluck/?chain=5042002#/practice** and connect MetaMask or Rabby. The app adds **Arc Testnet** for you. Get 20 test USDC from [Circle's faucet](https://faucet.circle.com) (pick Arc Testnet). On Arc that one balance pays the gas too.
+2. Click **Fund the bots**: each bot gets 5.10 test USDC in one transfer, enough for its collateral, three rounds and its gas.
+3. Create the practice circle (1 USDC a round), play the three one-minute rounds, outbid the bots for a pot, claim it and withdraw at the end. 20 test USDC covers the whole run.
 
 ## How it works
 
@@ -119,9 +125,28 @@ An earlier version that paid winners directly (push payments) is archived in `de
 
 The same contracts deploy unchanged to Arbitrum One or Arbitrum Sepolia (`forge script script/Deploy.s.sol --rpc-url <rpc> --broadcast`, with `USDG=<address>` to use native USDG).
 
+## On Arc
+
+Arc is Circle's chain with **USDC as the gas token**, which suits a savings circle: members hold one asset and nothing else. Contributions, collateral, payouts and gas all come out of the same USDC balance, so nobody has to buy a volatile token before they can save.
+
+- **One balance.** Circles use USDC through Arc's ERC-20 interface at `0x3600000000000000000000000000000000000000` (6 decimals), which moves the same balance as the native USDC (18 decimals) that pays gas. The app shows one USDC figure, and the practice flow funds each bot with a single USDC transfer that covers both its stake and its gas.
+- **Fees too small to matter in a circle.** On Arc Testnet a member's transaction costs about 0.003 USDC; the visitor's twelve transactions in a full practice circle (funding the bots, create, approve, join, three payments, a bid, two claims, the final withdrawal) cost 0.034 USDC together. The whole deployment cost 0.14 USDC.
+- **The same reviewed contracts.** No code changes were needed: Potluck's incoming-balance check holds for the system USDC (a transfer of X raises the ERC-20 view by exactly X), and pull payments keep working if Arc's USDC blocklist freezes a member.
+
+| Contract (Arc Testnet, chain id 5042002) | Address |
+|---|---|
+| PotluckFactory | [`0x7d20e02E0D57083D81b881FEE928BDa3D27802E6`](https://testnet.arcscan.app/address/0x7d20e02E0D57083D81b881FEE928BDa3D27802E6) |
+| PotluckCircle (implementation) | [`0x8E54bB8AB72f949D55476d2642cDC512D6019C98`](https://testnet.arcscan.app/address/0x8E54bB8AB72f949D55476d2642cDC512D6019C98) |
+| PotluckReputation | [`0x2574ae5D36c4Cb4D6C522ed63D7c76eCa3267a9b`](https://testnet.arcscan.app/address/0x2574ae5D36c4Cb4D6C522ed63D7c76eCa3267a9b) |
+| USDC (Arc system contract) | [`0x3600000000000000000000000000000000000000`](https://testnet.arcscan.app/address/0x3600000000000000000000000000000000000000) |
+
+Verified on Sourcify (exact match). A full practice circle (auction, 3 members, 1 USDC a round) ran to completion on it: [`0x58961Ac01FF484194832059E9e8D8c36667964E7`](https://luoy16002-svg.github.io/potluck/?chain=5042002#/c/0x58961Ac01FF484194832059E9e8D8c36667964E7).
+
+Deploy: `USDG=0x3600000000000000000000000000000000000000 forge script script/Deploy.s.sol --rpc-url https://rpc.testnet.arc.io --broadcast`. On Arc mainnet (chain id 5042) circles use real USDC, so the app keeps practice mode on Arc Testnet.
+
 ## Frontend
 
-`web/` is a Vite + React + viem app with no backend: it reads circles straight from the factory and talks to any injected wallet (MetaMask, Rabby). Test AUSD (Monad) or test USDG (Robinhood Chain) can be claimed from the circle page. `?chain=10143` or `?chain=46630` picks the network.
+`web/` is a Vite + React + viem app with no backend: it reads circles straight from the factory and talks to any injected wallet (MetaMask, Rabby). Test AUSD (Monad) or test USDG (Robinhood Chain) can be claimed from the circle page; on Arc Testnet the page links to Circle's faucet. `?chain=10143`, `?chain=46630` or `?chain=5042002` picks the network.
 
 ```
 cd web && npm install && npm run dev

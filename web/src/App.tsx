@@ -189,7 +189,7 @@ function explain(e: unknown): string {
   const name = raw.match(/Error: (\w+)\(/)?.[1] ?? raw.match(/reverted with the following reason:\s*(\w+)/)?.[1];
   if (name && FRIENDLY[name]) return FRIENDLY[name];
   if (/User rejected|denied/i.test(raw)) return 'you rejected the request in your wallet';
-  if (/insufficient funds/i.test(raw)) return 'not enough test gas; use the faucet link on the Try it page';
+  if (/insufficient funds/i.test(raw)) return 'not enough gas in this wallet (test networks: the Try it page links to a faucet)';
   return ((e as { shortMessage?: string }).shortMessage ?? (e as Error).message ?? 'unknown error').split('\n')[0];
 }
 
@@ -478,13 +478,17 @@ function CirclePage({ chain, address, account, send, tick }: { chain: Chain; add
           {!account && <p className="muted">Connect a wallet to join or pay.</p>}
           {account && me && (
             <p className="muted small">
-              Wallet: {usd(me.balance)} {sym} · {Number(me.eth) / 1e18 < 0.0001 ? 'no gas' : `${(Number(me.eth) / 1e18).toFixed(4)} ${N.gasSym}`}
+              Wallet: {usd(me.balance)} {sym} · {N.gasIsStable ? `gas is paid in ${sym}` : Number(me.eth) / 1e18 < 0.0001 ? 'no gas' : `${(Number(me.eth) / 1e18).toFixed(4)} ${N.gasSym}`}
             </p>
           )}
-          {account && isTestToken && me && me.balance < cfg.collateral + cfg.contribution && (
-            <button className="btn ghost" onClick={() => send(N.stableFaucetLabel, N.stableFaucet(token, account!))}>
-              {N.stableFaucetLabel}
-            </button>
+          {account && isTestToken && !N.mainnet && me && me.balance < cfg.collateral + cfg.contribution && (
+            N.stableFaucet ? (
+              <button className="btn ghost" onClick={() => send(N.stableFaucetLabel ?? `Get test ${sym}`, N.stableFaucet!(token, account!))}>
+                {N.stableFaucetLabel ?? `Get test ${sym}`}
+              </button>
+            ) : N.stableFaucetUrl ? (
+              <a className="btn ghost" href={N.stableFaucetUrl} target="_blank" rel="noreferrer">Get test {sym}</a>
+            ) : null
           )}
           {c.phase === 0 && account && !mine && (
             needsApproval(cfg.collateral) ? (

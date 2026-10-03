@@ -7,3 +7,5 @@ web/node_modules/
 web/dist/
 shots/
 deployments/31337.json
+.env.arc
+notes/astra-run*.log
