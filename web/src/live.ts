@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { decodeEventLog, type Address, type Chain, type Hex } from 'viem';
 import { PotluckCircleAbi } from './abi/PotluckCircle';
 import { publicClient } from './chain';
@@ -18,6 +18,8 @@ export type LiveEvent = {
 
 /** Public RPCs cap eth_getLogs at 100 blocks per request (Monad testnet), so the HTTP reader goes forward in chunks. */
 const SPAN = 99n;
+/** Smallest chunk the reader falls back to when a node still answers "range too large". */
+const MIN_SPAN = 9n;
 /** After a long pause (hidden tab) only the most recent blocks are read again. */
 const MAX_CATCH_UP = 500n;
 /** Chains with a WebSocket endpoint that streams logs as soon as a block is proposed. */
@@ -43,51 +45,69 @@ function merge(prev: LiveEvent[], incoming: LiveEvent[]): LiveEvent[] {
  * delivers a log when its block is proposed (about half a second after the transaction is sent) and again as the
  * block is voted, finalized and verified.
  */
+/** The page keys its component by network and circle, so this hook always starts from empty state. */
 export function useLiveEvents(chain: Chain, address: Address, pollMs: number): { events: LiveEvent[]; head: bigint | null; streaming: boolean } {
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [head, setHead] = useState<bigint | null>(null);
   const [streaming, setStreaming] = useState(false);
-  const last = useRef<bigint | null>(null);
-  const busy = useRef(false);
 
-  // HTTP reader (backfill everywhere, and the only source where there is no stream)
+  // HTTP reader (backfill everywhere, and the only source where there is no stream). Its position and in-flight
+  // flag live inside this effect, so a slow request from a previous circle or network can never move them.
   useEffect(() => {
     let stopped = false;
-    last.current = null;
-    setEvents([]);
+    let span = SPAN;
+    let lastRead: bigint | null = null;
+    let inFlight = false;
     const pc = publicClient(chain);
     const tick = async () => {
-      if (busy.current) return;
-      busy.current = true;
+      if (inFlight || stopped) return;
+      inFlight = true;
       try {
-        const tip = await pc.getBlockNumber();
-        let from = last.current === null ? tip - SPAN : last.current + 1n;
+        const tip = await pc.getBlockNumber({ cacheTime: 0 });
+        let from = lastRead === null ? tip - span : lastRead + 1n;
         if (tip - from > MAX_CATCH_UP) from = tip - MAX_CATCH_UP;
         if (from < 0n) from = 0n;
         const found: LiveEvent[] = [];
         while (from <= tip) {
-          const to = from + SPAN < tip ? from + SPAN : tip;
-          const logs = await pc.getContractEvents({ address, abi: PotluckCircleAbi, fromBlock: from, toBlock: to });
+          const to = from + span < tip ? from + span : tip;
+          // Logs are filtered by address only and decoded here: Arc's RPC nodes refuse an eth_getLogs call that
+          // also carries the list of event topics ("requested range too large"), even for two blocks.
+          let logs;
+          try {
+            logs = await pc.getLogs({ address, fromBlock: from, toBlock: to });
+          } catch (e) {
+            if (span > MIN_SPAN && /range|too large|limit/i.test(String((e as Error).message))) {
+              span = span / 2n;
+              continue;
+            }
+            throw e;
+          }
           for (const l of logs) {
+            let decoded: { eventName: string; args: unknown };
+            try {
+              decoded = decodeEventLog({ abi: PotluckCircleAbi, data: l.data, topics: l.topics }) as { eventName: string; args: unknown };
+            } catch {
+              continue;
+            }
             found.push({
               key: `${l.transactionHash}:${Number(l.logIndex)}`,
-              seen: last.current === null ? 0 : Date.now(),
+              seen: lastRead === null ? 0 : Date.now(),
               block: l.blockNumber!,
-              name: (l as unknown as { eventName: string }).eventName,
-              args: (l as unknown as { args: Record<string, unknown> }).args,
+              name: decoded.eventName,
+              args: decoded.args as Record<string, unknown>,
               tx: l.transactionHash!,
             });
           }
           from = to + 1n;
         }
-        last.current = tip;
         if (stopped) return;
+        lastRead = tip;
         setHead(tip);
         if (found.length) setEvents((prev) => merge(prev, found));
       } catch {
         /* the next tick retries */
       } finally {
-        busy.current = false;
+        inFlight = false;
       }
     };
     void tick();

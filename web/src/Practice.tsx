@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createWalletClient, http, maxUint256, type Address, type Chain, type WalletClient } from 'viem';
+import { createWalletClient, maxUint256, type Address, type Chain, type WalletClient } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { PotluckCircleAbi } from './abi/PotluckCircle';
 import { PotluckFactoryAbi } from './abi/PotluckFactory';
 import { TestUSDGAbi } from './abi/TestUSDG';
-import { chainById, deployments, gasFor, publicClient } from './chain';
+import { chainById, deployments, gasFor, isNetworkHiccup, publicClient, sendTransport } from './chain';
 import { net } from './net';
-import { readCircle, readWallet, short, usd, type Circle } from './data';
+import { PHASES, readCircle, readWallet, short, usd, type Circle } from './data';
+import { ArrowRight, ArrowUpRight, Check, CheckCircle, Wallet } from '@phosphor-icons/react';
+import { Showcase } from './ui/Showcase';
+import { Guard } from './ui/Guard';
+import { BigRing } from './ui/BigRing';
+import { chainName } from './ui/labels';
 
 /**
  * Practice circle: the visitor plus two bot members that live in this browser tab.
@@ -44,17 +49,35 @@ export function Practice(props: Props) {
 
 /** On a mainnet every circle uses real money, so practice (with throwaway bot wallets) stays on the test network. */
 function PracticeOnTestnet({ chain }: { chain: Chain }) {
-  const t = net(chain.id).practiceChain;
+  const N = net(chain.id);
+  const t = N.practiceChain;
   const target = t && deployments[t] ? chainById(t) : null;
   return (
     <main className="page practice">
-      <p className="eyebrow">Try it alone</p>
-      <h1>Practice runs on {target ? target.name : 'a test network'}.</h1>
-      <p className="lede">
-        Circles on {chain.name} use real {net(chain.id).sym}. The practice bots live in your browser tab with throwaway keys, so they stay on the
-        test network, where the same contracts run with free test {net(chain.id).sym}.
-      </p>
-      {target && <a className="btn big" href={`?chain=${target.id}#/practice`}>Open practice on {target.name} →</a>}
+      <div className="practice-split">
+        <div>
+          <p className="eyebrow">Try it alone</p>
+          <h1>Practice runs on {target ? target.name : 'a test network'}.</h1>
+          <p className="lede">
+            Circles on {chainName(chain)} mainnet hold real {N.sym}. The practice bots live in your browser tab with throwaway keys, so they stay on
+            the test network, where the same contracts run with free test {N.sym} from Circle's faucet.
+          </p>
+          <p className="lede">
+            In about three minutes you create a three-member auction circle, two bots join it, and you play every round: pay in, outbid the bots
+            for the pot, claim what you win and take your collateral back.
+          </p>
+          {target && (
+            <a className="btn big" href={`?chain=${target.id}#/practice`}>
+              Open practice on {target.name} <ArrowRight size={18} weight="bold" aria-hidden />
+            </a>
+          )}
+        </div>
+        {N.showcase && (
+          <Guard>
+            <Showcase chainId={N.showcase.chainId} circle={N.showcase.circle} />
+          </Guard>
+        )}
+      </div>
     </main>
   );
 }
@@ -72,7 +95,7 @@ function PracticeCircle({ chain, account, wallet, send, connect }: Props) {
   const ROUND = N.practiceRound;
   const pc = publicClient(chain);
   const [bots] = useState(() => loadBots(chain.id).map((k) => privateKeyToAccount(k)));
-  const botWallets = useRef(bots.map((a) => createWalletClient({ account: a, chain, transport: http(undefined, { retryCount: 5, retryDelay: 800 }) })));
+  const botWallets = useRef(bots.map((a) => createWalletClient({ account: a, chain, transport: sendTransport(chain) })));
   const [circleAddr, setCircleAddr] = useState<Address | null>(() => (localStorage.getItem(`potluck.practice.${chain.id}`) as Address) || null);
   const [c, setC] = useState<Circle | null>(null);
   const [me, setMe] = useState<{ balance: bigint; allowance: bigint; eth: bigint } | null>(null);
@@ -95,18 +118,19 @@ function PracticeCircle({ chain, account, wallet, send, connect }: Props) {
     if (N.visitorFundsBots) setBotTok(await Promise.all(bots.map(async (b) => (await readWallet(chain, d.usdg, b.address)).balance)));
     if (account) setMe(await readWallet(chain, d.usdg, account, circleAddr ?? undefined));
     if (circleAddr) setC(await readCircle(chain, circleAddr));
-  }, [account, bots, chain, circleAddr, d.usdg, pc]);
+  }, [account, bots, chain, circleAddr, d.usdg, pc, N.visitorFundsBots]);
 
   useEffect(() => {
     void refresh();
     const t = setInterval(() => void refresh(), Math.min(4000, N.pollMs * 2));
     return () => clearInterval(t);
-  }, [refresh]);
+  }, [refresh, N.pollMs]);
 
   /** A bot action: send once, wait, log. Each action has a key so it is never sent twice; failures unlock it
    * again after a few seconds (the public RPC sometimes drops a request). Returns true once the action is done. */
   const sent = useRef(new Set<string>());
   const done = useRef(new Set<string>());
+  const failed = useRef(new Set<string>());
   const bot = useCallback(
     async (i: number, key: string, did: string, todo: string, req: { address: Address; abi: readonly unknown[]; functionName: string; args?: unknown[] }) => {
       if (done.current.has(key)) return true;
@@ -121,8 +145,13 @@ function PracticeCircle({ chain, account, wallet, send, connect }: Props) {
         say(`Bot ${BOT_NAMES[i]}`, did);
         return true;
       } catch (e) {
-        const why = ((e as { shortMessage?: string }).shortMessage ?? (e as Error).message).split('\n')[0];
-        say(`Bot ${BOT_NAMES[i]}`, `could not ${todo} (${why}); retrying`);
+        // One line per stuck action; the quiet retries that follow usually succeed within seconds.
+        if (!failed.current.has(key)) {
+          failed.current.add(key);
+          const msg = (e as { shortMessage?: string }).shortMessage ?? (e as Error).message ?? '';
+          const why = isNetworkHiccup(e) ? 'the network was busy' : /revert/i.test(msg) ? 'the transaction was reverted' : msg.split('\n')[0];
+          say(`Bot ${BOT_NAMES[i]}`, `could not ${todo} yet (${why}), trying again`);
+        }
         setTimeout(() => sent.current.delete(key), 6000);
         return false;
       }
@@ -211,7 +240,11 @@ function PracticeCircle({ chain, account, wallet, send, connect }: Props) {
       }
     } catch (e) {
       const err = e as { shortMessage?: string; details?: string; message?: string };
-      const why = /insufficient (balance|funds)/i.test(`${err.details} ${err.message}`) ? `not enough test ${N.gasSym} or ${sym} in your wallet` : err.shortMessage ?? err.message;
+      const why = /insufficient (balance|funds)/i.test(`${err.details} ${err.message}`)
+        ? `not enough test ${N.gasSym} or ${sym} in your wallet`
+        : isNetworkHiccup(e)
+          ? 'the network did not take the transaction; press the button again'
+          : (err.shortMessage ?? err.message ?? '').split('\n')[0];
       say('You', `funding failed: ${why}`);
     } finally {
       // Refresh first, so the button cannot be pressed again while the old balances are still shown.
@@ -258,7 +291,10 @@ function PracticeCircle({ chain, account, wallet, send, connect }: Props) {
   const botsFunded = circleAddr
     ? botEth.every((b) => b >= BOT_GAS / 10n)
     : botEth.every((b) => b >= BOT_GAS / 2n) && (!N.visitorFundsBots || botTok.every((t) => t >= BOT_STAKE));
-  const visitorShort = N.visitorFundsBots && !!me && me.balance < BOT_STAKE * 3n;
+  // Short means: less than the bots still waiting for funds, plus the visitor's own collateral and contributions. Counting
+  // only unfunded bots keeps the faucet link from flashing up halfway through funding.
+  const unfundedBots = N.visitorFundsBots ? botTok.filter((t) => t < BOT_STAKE).length : 0;
+  const visitorShort = N.visitorFundsBots && !busy && !!me && me.balance < BigInt(unfundedBots) * BOT_FUNDS + CONTRIBUTION * 5n;
   const needUsdg = !!me && me.balance < CONTRIBUTION * 5n;
   const needApproval = !!me && !!circleAddr && me.allowance < CONTRIBUTION * 4n;
   const left = c ? c.deadline - (now + c.clockSkew) : 0;
@@ -280,36 +316,63 @@ function PracticeCircle({ chain, account, wallet, send, connect }: Props) {
         You pay, try to outbid them for the pot, claim what you win, and take your collateral back at the end. Every step is a real transaction on {chain.name}.
       </p>
 
+      <div className="practice-grid">
+      <div className="pg-steps">
       <ol className="steps-list">
         <li className={step > 0 ? 'done' : step === 0 ? 'now' : ''}>
+          <StepMark n={1} done={step > 0} />
           <b>Connect a wallet</b> with a little test {N.gasSym} for gas.{' '}
-          {N.gasFaucet && <a href={N.gasFaucet} target="_blank" rel="noreferrer">Get test {N.gasSym}</a>}
-          {!account && <button className="btn" onClick={connect}>Connect wallet</button>}
+          {N.gasFaucet && (
+            <a className="inline-link" href={N.gasFaucet} target="_blank" rel="noreferrer">
+              Get test {N.gasSym} <ArrowUpRight size={12} weight="bold" aria-hidden />
+            </a>
+          )}
           {account && me && me.eth === 0n && <span className="bad"> Your wallet has no test {N.gasSym} on this network yet.</span>}
+          {!account && (
+            <div className="step-actions">
+              <button className="btn" onClick={connect}><Wallet size={17} weight="bold" aria-hidden /> Connect wallet</button>
+            </div>
+          )}
         </li>
         <li className={step > 1 ? 'done' : step === 1 ? 'now' : ''}>
+          <StepMark n={2} done={step > 1} />
           {N.gasIsStable
             ? <><b>Fund the bots.</b> Send {BOT_NAMES.join(' and ')} {usd(BOT_FUNDS)} test {sym} each. On {chain.name} the same {sym} pays their gas.</>
             : N.visitorFundsBots
               ? <><b>Fund the bots.</b> Send {BOT_NAMES.join(' and ')} {Number(BOT_GAS) / 1e18} test {N.gasSym} for gas and {usd(BOT_STAKE, 0)} test {sym} each.</>
               : <><b>Give the bots gas.</b> Two small transfers of {Number(BOT_GAS) / 1e18} test {N.gasSym} to {BOT_NAMES.join(' and ')}.</>}
           <span className="muted small"> ({bots.map((b) => short(b.address)).join(', ')})</span>
-          {step === 1 && visitorShort && faucet(N.stableFaucetLabel ?? `Get test ${sym}`)}
-          {step === 1 && <button className="btn" disabled={busy || visitorShort} onClick={fundBots}>{N.visitorFundsBots ? 'Fund the bots' : 'Send gas to the bots'}</button>}
+          {step === 1 && (
+            <div className="step-actions">
+              {visitorShort && faucet(N.stableFaucetLabel ?? `Get test ${sym}`)}
+              <button className="btn" disabled={busy || visitorShort} onClick={fundBots}>{N.visitorFundsBots ? 'Fund the bots' : 'Send gas to the bots'}</button>
+            </div>
+          )}
         </li>
         <li className={step > 2 ? 'done' : step === 2 ? 'now' : ''}>
+          <StepMark n={3} done={step > 2} />
           <b>Create the practice circle</b>: 3 members, {usd(CONTRIBUTION, 0)} {sym} a round, auction mode, {ROUND}-second rounds.
-          {step === 2 && !circleAddr && <button className="btn" disabled={busy} onClick={createCircle}>Create practice circle</button>}
+          {step === 2 && !circleAddr && (
+            <div className="step-actions">
+              <button className="btn" disabled={busy} onClick={createCircle}>Create practice circle</button>
+            </div>
+          )}
           {step === 2 && circleAddr && <span className="muted small"> Loading the circle…</span>}
         </li>
         <li className={step > 3 ? 'done' : step === 3 ? 'now' : ''}>
+          <StepMark n={4} done={step > 3} />
           <b>Join</b> by locking {usd(CONTRIBUTION, 0)} {sym} collateral. The bots join on their own.
-          {step >= 3 && needUsdg && faucet(`Get test ${sym}`)}
-          {step === 3 && !mine && (needApproval
-            ? <button className="btn" onClick={() => send(`Approve ${sym}`, { address: d.usdg, abi: TestUSDGAbi, functionName: 'approve', args: [circleAddr, maxUint256] })}>Approve {sym}</button>
-            : <button className="btn" onClick={() => call('Join circle', 'join')}>Join</button>)}
+          {((step >= 3 && needUsdg) || (step === 3 && !mine)) && (
+            <div className="step-actions">
+              {step >= 3 && needUsdg && faucet(`Get test ${sym}`)}
+              {step === 3 && !mine && (needApproval
+                ? <button className="btn" onClick={() => send(`Approve ${sym}`, { address: d.usdg, abi: TestUSDGAbi, functionName: 'approve', args: [circleAddr, maxUint256] })}>Approve {sym}</button>
+                : <button className="btn" onClick={() => call('Join circle', 'join')}>Join</button>)}
+            </div>
+          )}
         </li>
         <li className={step > 4 ? 'done' : step === 4 ? 'now' : ''}>
+          <StepMark n={5} done={step > 4} />
           <b>Play the rounds.</b> Pay each round; while it is open, beat the bots' bid to take the pot early.
           {step === 4 && c && mine && (
             <div className="round-box">
@@ -321,7 +384,7 @@ function PracticeCircle({ chain, account, wallet, send, connect }: Props) {
               {!mine.paidThisRound && !mine.defaulted && (needApproval
                 ? <button className="btn" onClick={() => send(`Approve ${sym}`, { address: d.usdg, abi: TestUSDGAbi, functionName: 'approve', args: [circleAddr, maxUint256] })}>Approve {sym}</button>
                 : <button className="btn" onClick={() => call(`Pay round ${c.currentRound}`, 'contribute')}>Pay {usd(CONTRIBUTION, 0)} {sym}</button>)}
-              {mine.paidThisRound && <span className="ok">✓ paid</span>}
+              {mine.paidThisRound && <span className="ok"><CheckCircle size={17} weight="fill" aria-hidden /> Paid this round</span>}
               {mine.claimable > 0n && (
                 <button className="btn" onClick={() => call('Claim payout', 'claim')}>Claim {usd(mine.claimable)} {sym}</button>
               )}
@@ -339,30 +402,83 @@ function PracticeCircle({ chain, account, wallet, send, connect }: Props) {
             </div>
           )}
         </li>
-        <li className={step === 5 ? 'now' : ''}>
+        <li className={step === 5 && mine && mine.collateralLeft + mine.bond + mine.claimable === 0n ? 'done' : step === 5 ? 'now' : ''}>
+          <StepMark n={6} done={step === 5 && !!mine && mine.collateralLeft + mine.bond + mine.claimable === 0n} />
           <b>Take your collateral and bond back</b>, then see the record written to your savings score.
-          {step === 5 && mine && mine.collateralLeft + mine.bond + mine.claimable > 0n && (
-            <button className="btn" onClick={() => call('Withdraw', 'withdraw')}>Withdraw {usd(mine.collateralLeft + mine.bond + mine.claimable)} {sym}</button>
+          {step === 5 && mine && mine.collateralLeft + mine.bond + mine.claimable === 0n && (
+            <p className="ok"><CheckCircle size={17} weight="fill" aria-hidden /> All settled: your collateral and bond are back in your wallet.</p>
           )}
-          {step === 5 && account && <a className="btn ghost" href={`#/score/${account}`}>See your savings score</a>}
+          {step === 5 && account && (
+            <div className="step-actions">
+              {mine && mine.collateralLeft + mine.bond + mine.claimable > 0n && (
+                <button className="btn" onClick={() => call('Withdraw', 'withdraw')}>Withdraw {usd(mine.collateralLeft + mine.bond + mine.claimable)} {sym}</button>
+              )}
+              <a className="btn ghost" href={`#/score/${account}`}>See your savings score</a>
+            </div>
+          )}
         </li>
       </ol>
 
       {c && (
-        <p className="small">
+        <p className="small pg-summary">
           Circle <a href={`#/c/${c.address}`}>{short(c.address)}</a> · {c.results.length} of 3 rounds paid out
           {c.results.map((r) => ` · R${r.round}: ${r.winner.toLowerCase() === account?.toLowerCase() ? 'you' : 'a bot'} got ${usd(r.payout)}${r.discount ? ` (bid ${usd(r.discount)})` : ''}`)}
           {' · '}<a href="#/practice" onClick={reset}>start over</a>
         </p>
       )}
 
+      </div>
+
+      <aside className="pg-side" aria-label="Your practice circle">
+        <div className="side-card">
+          <div className="side-head">
+            <h3>Your practice circle</h3>
+            <span className={`pill ${c ? `p${c.phase}` : 'p0'}`}>
+              {c?.phase === 2 && <CheckCircle size={13} weight="fill" aria-hidden />} {c ? PHASES[c.phase] : 'Not created'}
+            </span>
+          </div>
+          <Guard>
+            <BigRing
+              c={c}
+              account={account}
+              sym={sym}
+              names={Object.fromEntries(bots.map((b, i) => [b.address.toLowerCase(), BOT_NAMES[i]]))}
+              preview={{ size: 3, seats: [account, bots[0].address, bots[1].address], pot: CONTRIBUTION * 3n }}
+            />
+          </Guard>
+          <p className="side-status">
+            {!c && <>You, {BOT_NAMES.join(' and ')}: three seats, {usd(CONTRIBUTION, 0)} {sym} each round.</>}
+            {c?.phase === 0 && <>{c.members.length} of 3 seats taken. The circle starts when the last seat fills.</>}
+            {c?.phase === 1 && (
+              <>
+                Round {c.currentRound} of 3 · {left > 0 ? `closes in ${left}s` : 'closing'} · {c.members.filter((m) => m.paidThisRound).length} of 3 paid
+                {c.topBidder && <> · best bid {usd(c.topDiscount)} by {c.topBidder.toLowerCase() === account?.toLowerCase() ? 'you' : BOT_NAMES[bots.findIndex((b) => b.address.toLowerCase() === c.topBidder!.toLowerCase())] ?? 'a bot'}</>}
+              </>
+            )}
+            {c && c.phase >= 2 && <>{c.results.length} of 3 pots paid out.</>}
+          </p>
+          {c && (
+            <ul className="legend" aria-label="Legend">
+              {c.phase === 1 && <li><i className="lg-paid" /> Paid this round</li>}
+              <li><i className="lg-won" /> Took the pot</li>
+            </ul>
+          )}
+        </div>
+      </aside>
+
       {log.length > 0 && (
-        <div className="log">
+        <div className="log pg-log">
           {log.map((l) => (
             <div key={l.t + l.text}><span className="muted">{new Date(l.t).toLocaleTimeString()}</span> <b>{l.who}</b> {l.text}</div>
           ))}
         </div>
       )}
+      </div>
     </main>
   );
+}
+
+
+function StepMark({ n, done }: { n: number; done: boolean }) {
+  return <span className="step-n" aria-hidden>{done ? <Check size={15} weight="bold" /> : n}</span>;
 }

@@ -32,7 +32,18 @@ export type Net = {
   pollMs: number;
   /** One-line description shown above the home page title. */
   tagline: string;
+  /** A finished circle (on this network or its test network) shown to visitors when this network has none yet. */
+  showcase?: { chainId: number; circle: Address; member: Address };
+  /** The contracts on this network are verified on Sourcify. */
+  verified?: boolean;
 };
+
+/** A practice circle that ran to completion on Arc Testnet from the web app: auction mode, 3 members, 3 rounds. */
+const ARC_SHOWCASE = {
+  chainId: 5042002,
+  circle: '0x58961Ac01FF484194832059E9e8D8c36667964E7',
+  member: '0x739bB2b0eCEa6f02b226B490a5797C2069621931',
+} as const;
 
 /** Agora's AUSD faucet on Monad testnet: anyone may call requestFunds(to); 10,000 AUSD per drip. */
 const AGORA_FAUCET: Address = '0xd236c18D274E54FAccC3dd9DDA4b27965a73ee6C';
@@ -91,6 +102,8 @@ const NETS: Record<number, Net> = {
     practiceRound: 60,
     pollMs: 2000,
     tagline: 'Savings circles on Arc · USDC',
+    showcase: ARC_SHOWCASE,
+    verified: true,
   },
   5042002: {
     sym: 'USDC',
@@ -105,10 +118,13 @@ const NETS: Record<number, Net> = {
     practiceRound: 60,
     pollMs: 1500,
     tagline: 'Savings circles on Arc · USDC',
+    showcase: ARC_SHOWCASE,
+    verified: true,
   },
 };
 
-const LOCAL: Net = { ...NETS[46630], gasFaucet: undefined, pollMs: 2000, tagline: 'Savings circles · local chain' };
+// Anvil's base fee is far above Robinhood Chain's, so local practice bots get more gas.
+const LOCAL: Net = { ...NETS[46630], gasFaucet: undefined, botGas: parseEther('0.01'), pollMs: 2000, tagline: 'Savings circles · local chain' };
 
 export function net(chainId: number): Net {
   return NETS[chainId] ?? LOCAL;

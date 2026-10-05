@@ -10,6 +10,8 @@ export const MODES = ['Fixed order', 'Auction'] as const;
 
 export const usd = (v: bigint, digits = 2) =>
   Number(formatUnits(v, 6)).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+/** An amount for headlines and buttons: whole amounts without decimals (100), others with two (2.24). */
+export const money = (v: bigint) => usd(v, v % 1_000_000n === 0n ? 0 : 2);
 export const toUnits = (s: string) => parseUnits(s || '0', 6);
 export const short = (a?: string) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
 

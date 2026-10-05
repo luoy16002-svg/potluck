@@ -3,6 +3,7 @@ import {
   createWalletClient,
   custom,
   defineChain,
+  fallback,
   http,
   type Account,
   type Address,
@@ -64,6 +65,29 @@ export function chainById(id: number): Chain {
   return chains.find((c) => c.id === id) ?? chains[0];
 }
 
+/** More public RPCs per network. Transactions go out through a fallback over all of them, so one node refusing or
+ * dropping a send (Arc Testnet's main RPC sometimes answers eth_sendRawTransaction with "method not available")
+ * does not stall a payment. */
+const BACKUP_RPCS: Record<number, string[]> = {
+  5042: ['https://arc.drpc.org'],
+  5042002: ['https://rpc.blockdaemon.testnet.arc.network', 'https://rpc.drpc.testnet.arc.network', 'https://rpc.quicknode.testnet.arc.network'],
+};
+
+/** Transport for wallets that sign in the page (practice bots, recording accounts). */
+export function sendTransport(chain: Chain) {
+  const primary = http(undefined, { retryCount: 3, retryDelay: 600 });
+  const backups = BACKUP_RPCS[chain.id] ?? [];
+  return backups.length ? fallback([primary, ...backups.map((url) => http(url, { retryCount: 1 }))]) : primary;
+}
+
+/** True when the network, not the transaction, failed: a dropped or timed-out request, rate limiting, or a node that
+ * refused the method. Sending again is the right answer to these. */
+export function isNetworkHiccup(e: unknown): boolean {
+  const err = e as { name?: string; shortMessage?: string; message?: string };
+  const raw = `${err.name ?? ''} ${err.shortMessage ?? ''} ${err.message ?? ''}`;
+  return /HttpRequestError|TimeoutError|is not available|not supported|rate.?limit|Too Many Requests|status 429|fetch failed|Failed to fetch|NetworkError|ECONNRESET/i.test(raw);
+}
+
 const publicClients = new Map<number, PublicClient>();
 export function publicClient(chain: Chain): PublicClient {
   if (!publicClients.has(chain.id)) {
@@ -110,7 +134,7 @@ export async function connectWallet(chain: Chain): Promise<{ wallet: WalletClien
   const key = demo === null ? null : chain.id === localChain.id ? DEMO_KEYS[demo] : import.meta.env.DEV ? envKeys[demo] : null;
   if (key) {
     const account = privateKeyToAccount(key);
-    return { wallet: createWalletClient({ account, chain, transport: http() }), account: account.address };
+    return { wallet: createWalletClient({ account, chain, transport: sendTransport(chain) }), account: account.address };
   }
   if (!window.ethereum) throw new Error('No browser wallet found. Install MetaMask or Rabby to continue.');
   const [account] = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as Address[];
