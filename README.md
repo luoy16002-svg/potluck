@@ -14,6 +14,17 @@ It runs on trust, and it fails the same way everywhere: someone takes the pot ea
 - **A portable savings record.** When a circle ends, each member's on-time payments, missed payments and defaults are written to `PotluckReputation`, an open on-chain registry any lender, merchant or new circle can read.
 - **No admin keys, pull payments.** There is no owner and no function that moves funds outside the rules. Settlement only credits balances and each member claims their own money, so one frozen or broken address can never lock the circle. Circles are minimal-proxy clones of one implementation.
 
+**Live on Arc mainnet:** https://luoy16002-svg.github.io/potluck/?chain=5042 · [85-second demo video](https://youtu.be/IX9n1fUS7I8) (a real practice circle on Arc Testnet, sped up while it waits for round deadlines)
+
+<p>
+  <img src="docs/arc-home.png" width="49%" alt="The home page on Arc mainnet: six members around a pot, one of them takes it each round">
+  <img src="docs/arc-practice.png" width="49%" alt="A practice circle on Arc Testnet: the visitor outbids a bot while the circle beside the steps shows who has paid">
+</p>
+<p>
+  <img src="docs/arc-finished-circle.png" width="49%" alt="A finished three-member auction circle with every pot paid out">
+  <img src="docs/arc-score.png" width="49%" alt="The savings record written for a member when the circle ended">
+</p>
+
 ## Try it in three minutes on Monad (for judges)
 
 1. Open **https://luoy16002-svg.github.io/potluck/?chain=10143#/practice** and connect MetaMask or Rabby. The app adds **Monad Testnet** for you. Get test MON from the [Monad faucet](https://faucet.monad.xyz).
