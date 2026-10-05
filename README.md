@@ -134,6 +134,15 @@ Arc is Circle's chain with **USDC as the gas token**, which suits a savings circ
 - **The same reviewed contracts.** No code changes were needed: Potluck's incoming-balance check holds for the system USDC (a transfer of X raises the ERC-20 view by exactly X), and pull payments keep working if Arc's USDC blocklist freezes a member.
 - **Fork tests on both Arc networks.** [`test/ArcFork.t.sol`](test/ArcFork.t.sol) runs real circles against the live USDC system contract: fixed and auction circles to completion, a missed payment covered from collateral, and a blocklisted member (Arc Testnet's seeded address) who cannot pay while the other two finish. After every step it checks both views of every balance (6-decimal ERC-20 and 18-decimal native) and that the circle holds exactly what it owes. Arc's USDC is backed by protocol precompiles, so these need [Arc Foundry](https://github.com/circlefin/arc-foundry): `arc-forge test --match-path test/ArcFork.t.sol --fork-url arc_testnet` (6 pass; on `arc_mainnet` 5 pass and the blocklist test is skipped). Plain `forge test` skips them and runs the offline suite.
 
+| Contract (Arc mainnet, chain id 5042) | Address |
+|---|---|
+| PotluckFactory | [`0x7d20e02E0D57083D81b881FEE928BDa3D27802E6`](https://explorer.arc.io/address/0x7d20e02E0D57083D81b881FEE928BDa3D27802E6) |
+| PotluckCircle (implementation) | [`0x8E54bB8AB72f949D55476d2642cDC512D6019C98`](https://explorer.arc.io/address/0x8E54bB8AB72f949D55476d2642cDC512D6019C98) |
+| PotluckReputation | [`0x2574ae5D36c4Cb4D6C522ed63D7c76eCa3267a9b`](https://explorer.arc.io/address/0x2574ae5D36c4Cb4D6C522ed63D7c76eCa3267a9b) |
+| USDC (Arc system contract) | [`0x3600000000000000000000000000000000000000`](https://explorer.arc.io/address/0x3600000000000000000000000000000000000000) |
+
+Deployed on Arc mainnet on 5 October 2026 in one transaction, [`0x77d0d510…f4fd71330`](https://explorer.arc.io/tx/0x77d0d51051b7c8f108addd992efbdc4ebde01700a4ff9ae17534260f4fd71330) (block 24,337,851), for 0.084 USDC of gas. All three contracts are verified on [Sourcify](https://sourcify.dev/#/lookup/0x7d20e02E0D57083D81b881FEE928BDa3D27802E6) with an exact match. The addresses are the same as on Arc Testnet because the same deployer made the same first transaction on both networks. Mainnet circles hold real USDC, so the app's practice mode stays on Arc Testnet.
+
 | Contract (Arc Testnet, chain id 5042002) | Address |
 |---|---|
 | PotluckFactory | [`0x7d20e02E0D57083D81b881FEE928BDa3D27802E6`](https://testnet.arcscan.app/address/0x7d20e02E0D57083D81b881FEE928BDa3D27802E6) |
@@ -143,11 +152,11 @@ Arc is Circle's chain with **USDC as the gas token**, which suits a savings circ
 
 Verified on Sourcify (exact match). A full practice circle (auction, 3 members, 1 USDC a round) ran to completion on it: [`0x58961Ac01FF484194832059E9e8D8c36667964E7`](https://luoy16002-svg.github.io/potluck/?chain=5042002#/c/0x58961Ac01FF484194832059E9e8D8c36667964E7).
 
-Deploy: `USDG=0x3600000000000000000000000000000000000000 forge script script/Deploy.s.sol --rpc-url https://rpc.testnet.arc.io --broadcast`. On Arc mainnet (chain id 5042) circles use real USDC, so the app keeps practice mode on Arc Testnet.
+Deploy: `forge script script/Deploy.s.sol --rpc-url arc_testnet --broadcast` (or `arc_mainnet`). On both Arc networks the script uses the USDC system contract by default and never deploys a test token.
 
 ## Frontend
 
-`web/` is a Vite + React + viem app with no backend: it reads circles straight from the factory and talks to any injected wallet (MetaMask, Rabby). Test AUSD (Monad) or test USDG (Robinhood Chain) can be claimed from the circle page; on Arc Testnet the page links to Circle's faucet. `?chain=10143`, `?chain=46630` or `?chain=5042002` picks the network.
+`web/` is a Vite + React + viem app with no backend: it reads circles straight from the factory and talks to any injected wallet (MetaMask, Rabby). Test AUSD (Monad) or test USDG (Robinhood Chain) can be claimed from the circle page; on Arc Testnet the page links to Circle's faucet. `?chain=10143`, `?chain=46630`, `?chain=5042` (Arc mainnet, real USDC) or `?chain=5042002` (Arc Testnet) picks the network.
 
 ```
 cd web && npm install && npm run dev
